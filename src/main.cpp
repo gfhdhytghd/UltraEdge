@@ -454,9 +454,22 @@ static SP<SHyprCtlCommand> status;
 APICALL EXPORT std::string PLUGIN_API_VERSION() { return HYPRLAND_API_VERSION; }
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
   handle = h;
-  if (std::string(__hyprland_api_get_hash()) !=
-      __hyprland_api_get_client_hash())
-    throw std::runtime_error("Hyprland header/runtime hash mismatch");
+  // Keep the client ABI computation local: the API's exported inline helper
+  // may be ELF-interposed by another already loaded plugin.
+  const auto abiVersionPrefix = [](const char *version) {
+    std::string value(version);
+    return value.substr(0, value.find_last_of('.'));
+  };
+  const std::string clientABI = std::string(GIT_COMMIT_HASH) + "_aq_" +
+                                abiVersionPrefix(AQUAMARINE_VERSION) + "_hu_" +
+                                abiVersionPrefix(HYPRUTILS_VERSION) + "_hg_" +
+                                abiVersionPrefix(HYPRGRAPHICS_VERSION) +
+                                "_hc_" + abiVersionPrefix(HYPRCURSOR_VERSION) +
+                                "_hlg_" + abiVersionPrefix(HYPRLANG_VERSION);
+  const std::string runtimeABI = __hyprland_api_get_hash();
+  if (runtimeABI != clientABI)
+    throw std::runtime_error("Hyprland header/runtime ABI mismatch: runtime=" +
+                             runtimeABI + "; client=" + clientABI);
   if (!HyprlandAPI::addConfigValueV2(
           h, makeShared<Config::Values::CStringValue>("plugin:ultraedge:rules",
                                                       "JSON rule array", "[]")))
