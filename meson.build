@@ -1,4 +1,4 @@
-project('UltraEdge', 'cpp', version: '0.2.0', default_options: ['cpp_std=c++23'])
+project('UltraEdge', 'cpp', version: '0.1.0', default_options: ['cpp_std=c++23'])
 shared_library('UltraEdge', 'src/main.cpp', dependencies: [dependency('hyprland'), dependency('lua')], cpp_args: ['-DWLR_USE_UNSTABLE', '-fno-gnu-unique'], install: true, override_options: ['b_lundef=false'])
 test('edge-state-machine', executable('edge-tests', 'tests/engine.cpp', include_directories: include_directories('src')))
 

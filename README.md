@@ -2,7 +2,8 @@
 
 Independent Hyprland 0.56.2 plugin for exposed edges and corners. Supports basic
 hot edges/corners and a deliberate **arrive → stop → push again** gesture, plus edge-qualified
-two/three/four-finger directional touchpad gestures. No
+two/three/four-finger directional touchpad gestures and configurable continuous
+outward pointer movement (`move_ms`, default 100ms), from mouse or touchpad. No
 Hymission dependency; actions and optional hold geometry are supplied by config.
 
 The repository is now `/home/wilf/data/hyprland_plugins/UltraEdge`; the plugin
