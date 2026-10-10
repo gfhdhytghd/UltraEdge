@@ -218,9 +218,17 @@ manual close returns no hold region, so the paired close remains harmless.
 
 Local persistent configuration is in
 `/home/wilf/.config/HyprV/hypr/ultraedge.lua`, required by
-`hyprland-plugins.lua`, with guards for missing plugin APIs. Left push opens
-Stage and closes it when leaving its dynamic strip. Right push runs
-`sidechat.sh show MONITOR`; exit runs `sidechat.sh hide`. The script retains its
+`hyprland-plugins.lua`, with guards for missing plugin APIs. Both edges use `mode = "move"` with
+`move_ms = 100` and `movement_gap_ms = 80`. Left outward movement opens
+Stage and closes it when leaving its dynamic strip. Right outward movement runs
+`sidechat.sh show MONITOR --no-cursor-warp`; exit runs
+`sidechat.sh hide '' --no-cursor-warp`. The empty monitor argument on hide keeps
+the flag in the script's third argument position. These edge calls skip explicit
+window focus, including focus restoration on hide, to avoid moving the pointer
+away from the edge. Keyboard and three-finger callers omit the flag and retain
+their existing focus behavior. This example requires a local `sidechat.sh` that
+supports `--no-cursor-warp`; the script is not bundled with UltraEdge.
+The script retains its
 no-argument toggle for existing binds and adds idempotent show/hide based on
 actual workspace visibility. Explicit show can move the existing window to the
 triggering output. Its launch remains asynchronous.
