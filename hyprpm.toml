@@ -1,0 +1,8 @@
+[repository]
+name = "hypr-edge-trigger"
+authors = ["wilf"]
+[hypr-edge-trigger]
+description = "Generic exposed edge and corner triggers with pause and second push"
+authors = ["wilf"]
+output = "build/libhypr-edge-trigger.so"
+build = ["cmake -S . -B build -DCMAKE_BUILD_TYPE=Release", "cmake --build build -j $(nproc)", "ctest --test-dir build --output-on-failure"]

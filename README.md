@@ -1,0 +1,171 @@
+# hypr-edge-trigger
+
+Independent Hyprland 0.56.2 plugin for exposed edges and corners. Supports basic
+hot edges/corners and a deliberate **arrive → stop → push again** gesture. No
+Hymission dependency; actions and optional hold geometry are supplied by config.
+
+## Build
+
+Requires matching Hyprland development headers, C++23, pkg-config, Lua and
+nlohmann/json headers. Exact compositor/header ABI is checked at plugin load.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j4
+ctest --test-dir build --output-on-failure
+# Alternative:
+meson setup build-meson
+meson compile -C build-meson
+meson test -C build-meson --print-errorlogs
+# Engine-only tests without Hyprland:
+cmake -S . -B build-engine -DBUILD_PLUGIN=OFF
+cmake --build build-engine
+ctest --test-dir build-engine --output-on-failure
+```
+
+`hyprpm.toml` builds the plugin and tests; no install command or helper process is
+included. The output is `build/libhypr-edge-trigger.so`. This repository has no
+remote requirement. Add/install/update only from a safe user-controlled session;
+plugin updates and loads change the running compositor. The authoring workflow
+here does not install, load/unload, update, inject input, push or publish.
+
+## Rules
+
+Use `hl.plugin.edge_trigger.rule(table)` in Lua. Returns true, or nil plus a
+validation error. `clear()` removes all rules and `pause(boolean)` clears all
+state without executing actions. Reload clears Lua registry references before
+config evaluation, preventing duplicate rules and stale callbacks. Rule actions
+receive the originating monitor name. Exceptions/false return from an action
+clear that rule and apply cooldown; returning nothing is success. Rules execute
+in registration order; overlapping rules can each fire, so avoid overlaps when
+mutually exclusive actions are desired.
+
+```lua
+local edge = hl.plugin and hl.plugin.edge_trigger
+local stage = hl.plugin and hl.plugin.hymission
+if edge and stage and type(stage.stage_open) == "function" and
+    type(stage.stage_close) == "function" and type(stage.stage_region) == "function" then
+  edge.clear()
+  assert(edge.rule({
+    target = "left", mode = "push", monitor = "*",
+    on_enter = function() stage.stage_open() end,
+    on_exit = function() stage.stage_close() end,
+    hold = function(name) return stage.stage_region(name) end,
+  }))
+end
+```
+
+Lua uses actual function callbacks, including native actions via `hl.dsp` /
+`hl.exec_cmd` and plugin-owned Lua APIs. It does **not** pretend a plugin string
+dispatcher is registered: Hyprland's Lua-only builds can reject
+`addDispatcherV2`. Native dispatcher strings are supported only with the legacy
+parser, through `plugin:edge_trigger:rules`, a JSON array. See
+[legacy.conf](examples/legacy.conf), [basic.lua](examples/basic.lua) for enter and
+dwell examples, and [hyprv.lua](examples/hyprv.lua) for the local Stage/AI-HUB setup.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `target` | `left` | `left`, `right`, `top`, `bottom`, `top-left`, `top-right`, `bottom-left`, `bottom-right` |
+| `monitor` | `*` | Exact output name or all outputs; selection happens per rule |
+| `mode` | `push` | `enter` immediately, `dwell` after dwell, `push` after stop + second movement |
+| `band` | 2 | Edge band, logical pixels; corners must be within both bands |
+| `pause_ms` | 180 | Quiet period before second push can start |
+| `push` | 8 | Outward motion accumulated per required axis |
+| `noise` | 0.5 | Ignore relative events at or below this vector magnitude |
+| `burst_ms` | 160 | Maximum gap between second-push events; longer gaps discard accumulation |
+| `dwell_ms` | 300 | Continuous residence for dwell mode |
+| `exit_distance` | 80 | Fixed holding width if no dynamic provider, inclusive boundary |
+| `cooldown_ms` | 400 | Suppression after exit or failed action |
+| `hold_wait_ms` | 0 | Optional first-geometry grace for asynchronous launch; fallback to exit_distance during grace |
+| `on_enter`, `on_exit` | required / optional | Lua functions, or native dispatcher strings in legacy JSON |
+| `hold` | absent | Lua callback `(monitor_name) → {x,y,width,height}` or nil |
+| `hold_command` | absent | Legacy: synchronous read-only hyprctl command, receives monitor name, returns rectangle JSON or null |
+| `enter_args`, `exit_args` | empty | Legacy dispatcher arguments, preserved verbatim |
+
+A 16ms compositor event-loop timer drives dwell and hold checks even while
+the desktop has no animations; second-push motion is processed immediately.
+
+All geometry and accelerated pointer movement use compositor logical coordinates;
+output rectangles are already scaled and transformed. Push thresholds use the
+same relative motion consumed by the compositor (`delta` or `unaccel` according
+to `input:force_no_accel`, including touchpad axis flips), never the difference
+between clamped cursor positions. Tablet absolute motion and pointer warps can
+enter/dwell or exit, but cannot supply a second push. For an edge, outward
+movement must dominate tangent movement; for a corner, both axes must move
+outward beyond noise and accumulate `push` each. Arriving motion is discarded.
+Continuous movement, reversal and sideways movement require a new stop. Noise
+is per event and does not contribute to the push. No fabricated motion is used.
+
+Actions latch once. Dynamic hold callbacks are evaluated while active and must
+return global logical rectangles; nil causes one exit. An asynchronous provider
+can use `hold_wait_ms`; after its first valid rectangle, later nil exits
+immediately, even during the grace window. Lua providers and native hold commands
+run synchronously in the compositor: keep them fast, read-only and nonblocking.
+Session lock, pause, config reload, output layout changes/removal and plugin exit
+clear state without executing actions. Pause is reset by config reload.
+
+## Multiple outputs
+
+Shared boundaries are not hot edges in **any mode**. The engine uses global
+logical rectangles, including negative origins, differing logical output sizes,
+rotations, offset and partial shared segments. Exposed parts of a partially
+shared side still work. Corners must have both sides exposed; shared endpoints
+within the configured corner band are conservatively masked. Mirrored or
+overlapping regions are masked where another output covers the outward point.
+
+Moving to a different output (or leaving all outputs) discards the candidate,
+stop, push and latch without enter/exit dispatch. This guarantees a cross-output
+movement cannot close/reopen an application or inherit a gesture. Applications
+can remain open after that transition; a later independent trigger uses
+idempotent actions. Output geometry changes also reset silently. This is an
+intentional behavior boundary, including pointer warps between outputs.
+
+## Stage and this machine
+
+Hymission adds `stage_open`, `stage_close`, `stage_region` and the read-only
+`hymission-stage-region` command. Open/close are idempotent, global Stage actions,
+not toggles. The rectangle follows actual target reservation width during
+animation, including the Stage desktop gap and output reservation gaps. A
+manual close returns no hold region, so the paired close remains harmless.
+
+Local persistent configuration is in
+`/home/wilf/.config/HyprV/hypr/edge-trigger.lua`, required by
+`hyprland-plugins.lua`, with guards for missing plugin APIs. Left push opens
+Stage and closes it when leaving its dynamic strip. Right push runs
+`sidechat.sh show MONITOR`; exit runs `sidechat.sh hide`. The script retains its
+no-argument toggle for existing binds and adds idempotent show/hide based on
+actual workspace visibility. Explicit show can move the existing window to the
+triggering output. Its launch remains asynchronous.
+
+The right hold strip uses the actual `ai-hub-firefox` window's left coordinate
+and its output's logical right boundary, with full output height so top/bottom
+margins and the small gap beside the window remain held. It follows resized or
+moved window geometry, not the current 360px rule. Hidden special-workspace
+windows do not supply geometry. There is a 5s first-geometry wait, bounded by the
+80px fallback strip while waiting; leaving before launch completes queues a
+hide behind the script's lock. The right side thus explicitly hides on exit.
+
+## Manual acceptance (pending)
+
+1. From a safe context install the independent plugin and update Hymission from
+   committed sources, then activate the persistent configuration. Do not mix a
+   manually loaded Hymission with a hyprpm-managed instance.
+2. Read `hyprctl edge-trigger-state` and verify rule count/error. In Lua inspect
+   API presence only: `hyprctl repl 'return type(hl.plugin.edge_trigger.rule)'`.
+   Read Stage region for the actual output and compare it with Stage placement.
+3. At an exposed left side: first arrival and continuous push must do nothing;
+   stop at least 180ms, then push at least 8 logical units. Stage opens once,
+   stays while inside its dynamic region, and closes once when leaving. Verify
+   sideways/reverse motion, jitter, manual Stage open/close and cooldown.
+4. Repeat at an exposed right side for AI-HUB. Check existing visible/hidden
+   windows, asynchronous launch, resizing, movement and trigger on another
+   output. Existing shortcut toggle must still work; leaving the hold strip
+   hides rather than toggles.
+5. Test every edge/corner mode on offset, scaled, negative-coordinate outputs.
+   Cross shared boundaries repeatedly, including near endpoints: no enter or
+   exit action and no inherited stop/push. Test monitor removal, config reload,
+   pause/resume and session lock. Observe only with real user mouse input.
+
+Passing builds and offline regression tests proves source compatibility and
+state-machine behavior only. The current compositor has not been used to load
+or exercise this new plugin; live acceptance is pending.
