@@ -82,7 +82,7 @@ static edge::Rule parse(const Json &j) {
   r.cooldown = j.value("cooldown_ms", 400.);
   r.dwell = j.value("dwell_ms", 300.);
   r.burst = j.value("burst_ms", 160.);
-  r.move = j.value("move_ms", 300.);
+  r.move = j.value("move_ms", 100.);
   r.movementGap = j.value("movement_gap_ms", 80.);
   r.holdWait = j.value("hold_wait_ms", 0.);
   if (!edge::validTarget(r.target) || r.monitor.empty())

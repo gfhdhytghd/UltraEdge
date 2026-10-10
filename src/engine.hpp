@@ -29,7 +29,7 @@ struct Rule {
   double swipeDistance = 40;
   bool consume = true;
   double band = 2, pause = 180, push = 8, noise = .5, exit = 80, cooldown = 400,
-         dwell = 300, burst = 160, holdWait = 0, move = 300, movementGap = 80;
+         dwell = 300, burst = 160, holdWait = 0, move = 100, movementGap = 80;
 };
 inline Point direction(const std::string &s) {
   return {s.find("left") != std::string::npos    ? -1.

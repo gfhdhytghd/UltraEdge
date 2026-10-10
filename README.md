@@ -81,7 +81,7 @@ dwell examples, and [hyprv.lua](examples/hyprv.lua) for the local Stage/AI-HUB s
 | `push` | 8 | Outward motion accumulated per required axis |
 | `noise` | 0.5 | Ignore relative events at or below this vector magnitude |
 | `burst_ms` | 160 | Maximum gap between second-push events; longer gaps discard accumulation |
-| `move_ms` | 300 | Move mode: required duration of outward movement after arrival, milliseconds |
+| `move_ms` | 100 | Move mode: required duration of outward movement after arrival, milliseconds |
 | `movement_gap_ms` | 80 | Move mode: maximum interval between significant outward events; a longer gap restarts timing |
 | `dwell_ms` | 300 | Continuous residence for dwell mode |
 | `exit_distance` | 80 | Fixed holding width if no dynamic provider, inclusive boundary |
@@ -267,7 +267,7 @@ or exercise this new plugin; live acceptance is pending.
 
 ```lua
 assert(hl.plugin.ultraedge.rule({
-  target = "left", mode = "move", move_ms = 300, movement_gap_ms = 80,
+  target = "left", mode = "move", move_ms = 100, movement_gap_ms = 80,
   on_enter = function() hl.plugin.hymission.stage_open() end,
   on_exit = function() hl.plugin.hymission.stage_close() end,
   hold = function(name) return hl.plugin.hymission.stage_region(name) end,
