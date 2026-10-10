@@ -75,12 +75,14 @@ dwell examples, and [hyprv.lua](examples/hyprv.lua) for the local Stage/AI-HUB s
 | --- | --- | --- |
 | `target` | `left` | `left`, `right`, `top`, `bottom`, `top-left`, `top-right`, `bottom-left`, `bottom-right` |
 | `monitor` | `*` | Exact output name or all outputs; selection happens per rule |
-| `mode` | `push` | `enter` immediately, `dwell` after dwell, `push` after stop + second movement; `swipe` after an edge-qualified touchpad gesture |
+| `mode` | `push` | `enter` immediately, `dwell` after dwell, `push` after stop + second movement; `move` after continuous outward movement; `swipe` after an edge-qualified touchpad gesture |
 | `band` | 2 | Edge band, logical pixels; corners must be within both bands |
 | `pause_ms` | 180 | Quiet period before second push can start |
 | `push` | 8 | Outward motion accumulated per required axis |
 | `noise` | 0.5 | Ignore relative events at or below this vector magnitude |
 | `burst_ms` | 160 | Maximum gap between second-push events; longer gaps discard accumulation |
+| `move_ms` | 300 | Move mode: required duration of outward movement after arrival, milliseconds |
+| `movement_gap_ms` | 80 | Move mode: maximum interval between significant outward events; a longer gap restarts timing |
 | `dwell_ms` | 300 | Continuous residence for dwell mode |
 | `exit_distance` | 80 | Fixed holding width if no dynamic provider, inclusive boundary |
 | `cooldown_ms` | 400 | Suppression after exit or failed action |
@@ -260,3 +262,20 @@ hide behind the script's lock. The right side thus explicitly hides on exit.
 Passing builds and offline regression tests proves source compatibility and
 state-machine behavior only. The current compositor has not been used to load
 or exercise this new plugin; live acceptance is pending.
+
+### Mouse movement duration
+
+```lua
+assert(hl.plugin.ultraedge.rule({
+  target = "left", mode = "move", move_ms = 300, movement_gap_ms = 80,
+  on_enter = function() hl.plugin.hymission.stage_open() end,
+  on_exit = function() hl.plugin.hymission.stage_close() end,
+  hold = function(name) return hl.plugin.hymission.stage_region(name) end,
+}))
+```
+
+触边后继续向外移动 `move_ms` 毫秒才触发，不需要先停顿。光标被边缘
+夹住时仍使用真实相对移动事件计时；到达边缘的那次移动不计入时长。
+停止超过 `movement_gap_ms`、反向、侧向移动或离开边缘会重新计时。
+定时器不会替代移动事件触发。小于 `noise` 的抖动不延长移动时间。
+此模式也适用于触控板光标移动；双／三／四指方向手势仍使用 `swipe`。

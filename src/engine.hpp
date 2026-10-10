@@ -19,7 +19,7 @@ struct Monitor {
   std::string name;
   Rect box;
 };
-enum class Mode { Enter, Dwell, Push, Swipe };
+enum class Mode { Enter, Dwell, Push, Move, Swipe };
 enum class Action { None, Enter, Exit };
 struct Rule {
   std::string monitor = "*", target = "left";
@@ -29,7 +29,7 @@ struct Rule {
   double swipeDistance = 40;
   bool consume = true;
   double band = 2, pause = 180, push = 8, noise = .5, exit = 80, cooldown = 400,
-         dwell = 300, burst = 160, holdWait = 0;
+         dwell = 300, burst = 160, holdWait = 0, move = 300, movementGap = 80;
 };
 inline Point direction(const std::string &s) {
   return {s.find("left") != std::string::npos    ? -1.
@@ -99,7 +99,8 @@ struct Machine {
   uint64_t generation = 0;
   bool candidate = false, armed = false, active = false;
   double lastMotion = 0, entered = 0, lastPush = 0, until = 0, activated = 0;
-  bool sawHold = false;
+  bool sawHold = false, moving = false;
+  double movementStart = 0, movementLast = 0;
   Point sum{};
   std::string monitor;
   Action activate(double now) {
@@ -107,12 +108,13 @@ struct Machine {
     activated = now;
     sawHold = false;
     candidate = armed = false;
+    moving = false;
     sum = {};
     return Action::Enter;
   }
   void reset() {
     ++generation;
-    candidate = armed = active = false;
+    candidate = armed = active = moving = false;
     sum = {};
     monitor.clear();
     until = 0;
@@ -163,7 +165,7 @@ struct Machine {
     if (!hot || now < until) {
       if (candidate)
         ++generation;
-      candidate = armed = false;
+      candidate = armed = moving = false;
       sum = {};
       return Action::None;
     }
@@ -171,12 +173,37 @@ struct Machine {
       ++generation;
       candidate = true;
       entered = lastMotion = now;
+      moving = false;
       sum = {};
       if (r.mode != Mode::Enter)
         return Action::None;
     }
     bool fire = r.mode == Mode::Enter ||
                 (r.mode == Mode::Dwell && now - entered >= r.dwell);
+    if (r.mode == Mode::Move) {
+      // A timer can expire a motion burst, but can never complete one.
+      if (moving && now - movementLast > r.movementGap)
+        moving = false;
+      if (motion && std::hypot(delta.x, delta.y) > r.noise) {
+        auto d = direction(r.target);
+        bool towards = (d.x == 0 || delta.x * d.x > r.noise) &&
+                       (d.y == 0 || delta.y * d.y > r.noise);
+        if (d.x == 0)
+          towards = towards && delta.y * d.y >= std::abs(delta.x);
+        if (d.y == 0)
+          towards = towards && delta.x * d.x >= std::abs(delta.y);
+        if (!towards)
+          moving = false;
+        else {
+          if (!moving) {
+            moving = true;
+            movementStart = now;
+          }
+          movementLast = now;
+          fire = now - movementStart >= r.move;
+        }
+      }
+    }
     if (r.mode == Mode::Push) {
       double len = std::hypot(delta.x, delta.y);
       if (!armed && now - lastMotion >= r.pause) {

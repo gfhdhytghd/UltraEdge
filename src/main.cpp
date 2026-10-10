@@ -58,6 +58,8 @@ static edge::Rule parse(const Json &j) {
     r.mode = edge::Mode::Enter;
   else if (mode == "dwell")
     r.mode = edge::Mode::Dwell;
+  else if (mode == "move")
+    r.mode = edge::Mode::Move;
   else if (mode == "swipe")
     r.mode = edge::Mode::Swipe;
   else if (mode != "push")
@@ -80,17 +82,19 @@ static edge::Rule parse(const Json &j) {
   r.cooldown = j.value("cooldown_ms", 400.);
   r.dwell = j.value("dwell_ms", 300.);
   r.burst = j.value("burst_ms", 160.);
+  r.move = j.value("move_ms", 300.);
+  r.movementGap = j.value("movement_gap_ms", 80.);
   r.holdWait = j.value("hold_wait_ms", 0.);
   if (!edge::validTarget(r.target) || r.monitor.empty())
     throw std::runtime_error("invalid target/monitor");
   for (double v : {r.band, r.pause, r.push, r.noise, r.exit, r.cooldown,
-                   r.dwell, r.burst, r.holdWait})
+                   r.dwell, r.burst, r.holdWait, r.move, r.movementGap})
     if (!std::isfinite(v) || v < 0)
       throw std::runtime_error("threshold must be finite and nonnegative");
   if (r.band <= 0 || r.push <= r.noise || r.exit < r.band || r.pause <= 0 ||
-      r.burst <= 0)
+      r.burst <= 0 || r.move <= 0 || r.movementGap <= 0)
     throw std::runtime_error("require band > 0, push > noise, exit_distance >= "
-                             "band, pause/burst > 0");
+                             "band, pause/burst/move/movement_gap > 0");
   return r;
 }
 static void failure(const std::string &s) { error = s; }
@@ -346,7 +350,8 @@ static int addRule(lua_State *L) {
     }
     for (auto key :
          {"band", "pause_ms", "push", "noise", "exit_distance", "cooldown_ms",
-          "dwell_ms", "burst_ms", "hold_wait_ms", "swipe_distance"}) {
+          "dwell_ms", "burst_ms", "hold_wait_ms", "swipe_distance",
+          "move_ms", "movement_gap_ms"}) {
       lua_getfield(L, 1, key);
       if (!lua_isnil(L, -1)) {
         if (!lua_isnumber(L, -1)) {

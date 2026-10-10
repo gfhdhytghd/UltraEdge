@@ -251,5 +251,37 @@ int main() {
   s.step(r, pair, {-1, -100}, {}, 4, false);
   check(swipe.end(r, s, 5, false) == Action::None,
         "cross output and return cannot inherit swipe");
+  r = Rule{};
+  r.mode = Mode::Move;
+  r.move = 200;
+  r.movementGap = 50;
+  s.reset();
+  sample(s, r, {0, 400}, {-100, 0}, 0);
+  check(sample(s, r, {0, 400}, {}, 1000, false) == Action::None,
+        "residence alone cannot complete move mode");
+  for (int t = 1010; t < 1210; t += 10)
+    check(sample(s, r, {0, 400}, {-1, 0}, t) == Action::None,
+          "move duration below threshold");
+  check(sample(s, r, {0, 400}, {-1, 0}, 1210) == Action::Enter,
+        "continuous clamped outward motion completes duration");
+  s.reset();
+  sample(s, r, {0, 400}, {}, 0, false);
+  sample(s, r, {0, 400}, {-1, 0}, 10);
+  sample(s, r, {0, 400}, {-1, 0}, 50);
+  check(sample(s, r, {0, 400}, {-1, 0}, 300) == Action::None,
+        "event gap restarts move duration even without timer");
+  check(sample(s, r, {0, 400}, {1, 0}, 310) == Action::None && !s.moving,
+        "reverse interrupts move duration");
+  sample(s, r, {0, 400}, {-1, 0}, 320);
+  check(sample(s, r, {0, 400}, {0, 2}, 330) == Action::None && !s.moving,
+        "tangent interrupts move duration");
+  sample(s, r, {0, 400}, {-1, 0}, 340);
+  sample(s, r, {20, 400}, {20, 0}, 350);
+  check(!s.moving && !s.candidate, "leaving edge clears move duration");
+  sample(s, r, {0, 400}, {-1, 0}, 360);
+  check(!s.moving, "arrival movement excluded from duration");
+  sample(s, r, {0, 400}, {-1, 0}, 370);
+  sample(s, r, {0, 400}, {}, 430, false);
+  check(!s.moving, "stationary timer expires movement burst");
   std::cout << checks << " state-machine checks passed\n";
 }
