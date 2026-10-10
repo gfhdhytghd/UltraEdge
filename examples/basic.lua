@@ -1,4 +1,4 @@
-local edge = hl.plugin and hl.plugin.edge_trigger
+local edge = hl.plugin and hl.plugin.ultraedge
 if not edge then return end
 edge.clear()
 -- Basic hot corner: enter immediately, exit past 40 logical pixels.

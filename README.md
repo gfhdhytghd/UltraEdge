@@ -1,8 +1,16 @@
-# hypr-edge-trigger
+# UltraEdge
 
 Independent Hyprland 0.56.2 plugin for exposed edges and corners. Supports basic
-hot edges/corners and a deliberate **arrive → stop → push again** gesture. No
+hot edges/corners and a deliberate **arrive → stop → push again** gesture, plus edge-qualified
+two/three/four-finger directional touchpad gestures. No
 Hymission dependency; actions and optional hold geometry are supplied by config.
+
+The repository is now `/home/wilf/data/hyprland_plugins/UltraEdge`; the plugin
+name and library are `UltraEdge` / `libUltraEdge.so`, Lua namespace is
+`hl.plugin.ultraedge`, legacy keys are `plugin:ultraedge:*`, and read-only status
+is `hyprctl ultraedge-state`. Replace the old edge_trigger namespace when
+migrating. Local guarded config is now `hypr/ultraedge.lua`; no install/reload
+was performed as part of the rename.
 
 ## Build
 
@@ -24,14 +32,14 @@ ctest --test-dir build-engine --output-on-failure
 ```
 
 `hyprpm.toml` builds the plugin and tests; no install command or helper process is
-included. The output is `build/libhypr-edge-trigger.so`. This repository has no
+included. The output is `build/libUltraEdge.so`. This repository has no
 remote requirement. Add/install/update only from a safe user-controlled session;
 plugin updates and loads change the running compositor. The authoring workflow
 here does not install, load/unload, update, inject input, push or publish.
 
 ## Rules
 
-Use `hl.plugin.edge_trigger.rule(table)` in Lua. Returns true, or nil plus a
+Use `hl.plugin.ultraedge.rule(table)` in Lua. Returns true, or nil plus a
 validation error. `clear()` removes all rules and `pause(boolean)` clears all
 state without executing actions. Reload clears Lua registry references before
 config evaluation, preventing duplicate rules and stale callbacks. Rule actions
@@ -41,7 +49,7 @@ in registration order; overlapping rules can each fire, so avoid overlaps when
 mutually exclusive actions are desired.
 
 ```lua
-local edge = hl.plugin and hl.plugin.edge_trigger
+local edge = hl.plugin and hl.plugin.ultraedge
 local stage = hl.plugin and hl.plugin.hymission
 if edge and stage and type(stage.stage_open) == "function" and
     type(stage.stage_close) == "function" and type(stage.stage_region) == "function" then
@@ -59,7 +67,7 @@ Lua uses actual function callbacks, including native actions via `hl.dsp` /
 `hl.exec_cmd` and plugin-owned Lua APIs. It does **not** pretend a plugin string
 dispatcher is registered: Hyprland's Lua-only builds can reject
 `addDispatcherV2`. Native dispatcher strings are supported only with the legacy
-parser, through `plugin:edge_trigger:rules`, a JSON array. See
+parser, through `plugin:ultraedge:rules`, a JSON array. See
 [legacy.conf](examples/legacy.conf), [basic.lua](examples/basic.lua) for enter and
 dwell examples, and [hyprv.lua](examples/hyprv.lua) for the local Stage/AI-HUB setup.
 
@@ -67,7 +75,7 @@ dwell examples, and [hyprv.lua](examples/hyprv.lua) for the local Stage/AI-HUB s
 | --- | --- | --- |
 | `target` | `left` | `left`, `right`, `top`, `bottom`, `top-left`, `top-right`, `bottom-left`, `bottom-right` |
 | `monitor` | `*` | Exact output name or all outputs; selection happens per rule |
-| `mode` | `push` | `enter` immediately, `dwell` after dwell, `push` after stop + second movement |
+| `mode` | `push` | `enter` immediately, `dwell` after dwell, `push` after stop + second movement; `swipe` after an edge-qualified touchpad gesture |
 | `band` | 2 | Edge band, logical pixels; corners must be within both bands |
 | `pause_ms` | 180 | Quiet period before second push can start |
 | `push` | 8 | Outward motion accumulated per required axis |
@@ -77,6 +85,10 @@ dwell examples, and [hyprv.lua](examples/hyprv.lua) for the local Stage/AI-HUB s
 | `exit_distance` | 80 | Fixed holding width if no dynamic provider, inclusive boundary |
 | `cooldown_ms` | 400 | Suppression after exit or failed action |
 | `hold_wait_ms` | 0 | Optional first-geometry grace for asynchronous launch; fallback to exit_distance during grace |
+| `fingers` | 3 | Swipe mode: 2, 3 or 4 |
+| `direction` | `right` | Swipe: left/right/up/down and up-left/up-right/down-left/down-right |
+| `swipe_distance` | 40 | Accumulated gesture distance per required axis, in reported gesture/scroll units |
+| `consume` | true | Capture matching gesture stream before native gesture/client handling; false observes alongside it |
 | `on_enter`, `on_exit` | required / optional | Lua functions, or native dispatcher strings in legacy JSON |
 | `hold` | absent | Lua callback `(monitor_name) → {x,y,width,height}` or nil |
 | `hold_command` | absent | Legacy: synchronous read-only hyprctl command, receives monitor name, returns rectangle JSON or null |
@@ -104,6 +116,79 @@ run synchronously in the compositor: keep them fast, read-only and nonblocking.
 Session lock, pause, config reload, output layout changes/removal and plugin exit
 clear state without executing actions. Pause is reset by config reload.
 
+## Edge touchpad gestures and key combinations
+
+```lua
+local edge = hl.plugin and hl.plugin.ultraedge
+if edge then
+  assert(edge.rule({
+    target = "left", mode = "swipe", fingers = 3, direction = "right",
+    swipe_distance = 40,
+    on_enter = hl.dsp.focus({workspace = "+1"}),
+  }))
+end
+```
+
+Arrive at the exposed edge/corner first, then begin the gesture while still
+inside `band`. Recognition requires the configured finger count and direction;
+wrong fingers, insufficient distance, reversal, native cancellation and a
+mostly perpendicular movement do not dispatch. The pointer must remain in the
+edge band through completion. Leaving/re-entering, crossing outputs, pause,
+reload or output layout changes invalidate the original gesture generation.
+Activation happens once and uses the same hold/exit/cooldown mechanism as the
+other modes. Leave the holding region to rearm. See
+[gestures.lua](examples/gestures.lua) for 2/3/4-finger and dispatcher examples.
+
+Three/four-finger input uses Hyprland's native swipe begin/update/end events;
+action executes only at end, so a cancelled stream never dispatches. A device
+that reports a native two-finger swipe is supported as well. Most libinput
+trackpads expose two fingers as scrolling instead: UltraEdge accepts finger-axis
+events only when the real originating device is a touchpad and its current
+libinput scroll method is `LIBINPUT_CONFIG_SCROLL_2FG`. Mouse wheels, button
+scroll, edge scroll, virtual devices and unverified devices cannot masquerade
+as two fingers. Two-finger completion is an axis stop or 140ms with no scroll
+updates; scroll events do not expose a native gesture cancellation flag.
+`swipe_distance` for that path uses raw scroll units and direction follows the
+reported deltas, including the device's natural-scroll setting. It is not a
+physical-finger-count or millimetre measurement. Tune distance/direction on the
+actual device during manual acceptance.
+
+`consume=true` captures a stream when a qualifying rule begins at an exposed
+edge, including streams later rejected by direction or distance. Elsewhere,
+input passes through. `consume=false` observes and can coexist with native
+bindings/client scrolling; both may act. Shared boundaries never qualify.
+Other plugins that already cancel a native begin retain priority. Existing
+in-progress captured streams are swallowed to completion after reset, without
+retaining callbacks. This avoids forwarding an orphan end/update to clients.
+
+Hyprland 0.56.2 already supports `hl.is_key_down(keysym_or_keycode)`. No extra
+key-tracking implementation is needed. Guard **the action callback** for any
+mode, including ordinary non-modifier keys:
+
+```lua
+local function when_keys(keys, dsp)
+  return function()
+    for _, key in ipairs(keys) do
+      if not hl.is_key_down(key) then return false end
+    end
+    return dsp()
+  end
+end
+-- Use this on_enter with enter, dwell, push or swipe:
+-- on_enter = when_keys({"Super_L", "Shift_L"}, hl.dsp.exec_cmd("kitty"))
+-- on_enter = when_keys({"a"}, hl.dsp.exec_cmd("kitty"))
+```
+
+Keys are checked at dispatch time, so the user can press them after arriving
+at the edge. `false` rejects activation, clears the rule and applies its
+cooldown; no exit action is owed for a rejected activation. The key guard does
+not affect whether a swipe stream was captured at begin; use `consume=false`
+if pass-through is desired when a callback rejects. Avoid guarding `on_exit`
+with activation keys: releasing those keys should not prevent cleanup. For
+either Super key use `hl.is_key_down("Super_L") or
+hl.is_key_down("Super_R")` in the guard. String dispatcher names remain limited
+to legacy configuration; Lua examples use real callable `hl.dsp` closures.
+
 ## Multiple outputs
 
 Shared boundaries are not hot edges in **any mode**. The engine uses global
@@ -129,7 +214,7 @@ animation, including the Stage desktop gap and output reservation gaps. A
 manual close returns no hold region, so the paired close remains harmless.
 
 Local persistent configuration is in
-`/home/wilf/.config/HyprV/hypr/edge-trigger.lua`, required by
+`/home/wilf/.config/HyprV/hypr/ultraedge.lua`, required by
 `hyprland-plugins.lua`, with guards for missing plugin APIs. Left push opens
 Stage and closes it when leaving its dynamic strip. Right push runs
 `sidechat.sh show MONITOR`; exit runs `sidechat.sh hide`. The script retains its
@@ -150,8 +235,8 @@ hide behind the script's lock. The right side thus explicitly hides on exit.
 1. From a safe context install the independent plugin and update Hymission from
    committed sources, then activate the persistent configuration. Do not mix a
    manually loaded Hymission with a hyprpm-managed instance.
-2. Read `hyprctl edge-trigger-state` and verify rule count/error. In Lua inspect
-   API presence only: `hyprctl repl 'return type(hl.plugin.edge_trigger.rule)'`.
+2. Read `hyprctl ultraedge-state` and verify rule count/error. In Lua inspect
+   API presence only: `hyprctl repl 'return type(hl.plugin.ultraedge.rule)'`.
    Read Stage region for the actual output and compare it with Stage placement.
 3. At an exposed left side: first arrival and continuous push must do nothing;
    stop at least 180ms, then push at least 8 logical units. Stage opens once,
@@ -165,6 +250,12 @@ hide behind the script's lock. The right side thus explicitly hides on exit.
    Cross shared boundaries repeatedly, including near endpoints: no enter or
    exit action and no inherited stop/push. Test monitor removal, config reload,
    pause/resume and session lock. Observe only with real user mouse input.
+
+6. For every configured 2/3/4-finger direction, start at the edge and finish
+   beyond threshold. Test wrong count, reversal, cancellation, insufficient
+   distance, leave-and-return and shared boundaries. Test keys pressed before
+   and after arrival, missing keys, and release before exit. Compare capture
+   and pass-through intentionally; ensure normal scrolling away from the edge.
 
 Passing builds and offline regression tests proves source compatibility and
 state-machine behavior only. The current compositor has not been used to load

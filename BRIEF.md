@@ -1,4 +1,4 @@
-# hypr-edge-trigger
+# UltraEdge
 
 独立 Hyprland 插件：可配置边缘／角落的二次推进触发器。
 
@@ -26,3 +26,9 @@
 - 右侧二次推进打开 AI-HUB，读取实际 ai-hub-firefox 窗口几何建立右侧保持区域，退出隐藏。
 - sidechat.sh 保留无参数 toggle，增加幂等 show/hide；跨显示器显式 show 可迁移至触发输出。
 - 修改 HyprV 配置并静态检查，插件缺失时保护；不安装或实时重载。
+
+## UltraEdge 扩展
+- 项目／独立目录、构建库、hyprpm、Lua 命名空间和本机条件配置同步改名。
+- mode=swipe：到达外露边缘后，以2/3/4指朝配置方向滑动调用动作，复用锁存退出。
+- 双指仅使用真实触控板的已确认2fg滚动事件；不把鼠标滚轮或edge scroll伪装成双指。
+- Lua is_key_down 已可实现按键与全部触发模式组合；只写可执行文档示例，不新增按键追踪。

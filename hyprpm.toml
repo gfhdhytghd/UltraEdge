@@ -1,8 +1,8 @@
 [repository]
-name = "hypr-edge-trigger"
+name = "UltraEdge"
 authors = ["wilf"]
-[hypr-edge-trigger]
-description = "Generic exposed edge and corner triggers with pause and second push"
+[UltraEdge]
+description = "Exposed hot edges/corners, second push and 2/3/4-finger edge gestures"
 authors = ["wilf"]
-output = "build/libhypr-edge-trigger.so"
+output = "build/libUltraEdge.so"
 build = ["cmake -S . -B build -DCMAKE_BUILD_TYPE=Release", "cmake --build build -j $(nproc)", "ctest --test-dir build --output-on-failure"]

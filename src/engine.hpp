@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -18,11 +19,15 @@ struct Monitor {
   std::string name;
   Rect box;
 };
-enum class Mode { Enter, Dwell, Push };
+enum class Mode { Enter, Dwell, Push, Swipe };
 enum class Action { None, Enter, Exit };
 struct Rule {
   std::string monitor = "*", target = "left";
   Mode mode = Mode::Push;
+  int fingers = 3;
+  std::string swipeDirection = "right";
+  double swipeDistance = 40;
+  bool consume = true;
   double band = 2, pause = 180, push = 8, noise = .5, exit = 80, cooldown = 400,
          dwell = 300, burst = 160, holdWait = 0;
 };
@@ -77,13 +82,36 @@ inline bool exposed(const Rule &r, const Monitor &m, Point p,
   }
   return true;
 }
+inline Point swipeDirection(const std::string &name) {
+  std::string d = name;
+  if (auto p = d.find("up"); p != std::string::npos)
+    d.replace(p, 2, "top");
+  if (auto p = d.find("down"); p != std::string::npos)
+    d.replace(p, 4, "bottom");
+  return direction(d);
+}
+inline bool validSwipeDirection(const std::string &name) {
+  return name == "left" || name == "right" || name == "up" || name == "down" ||
+         name == "up-left" || name == "up-right" || name == "down-left" ||
+         name == "down-right";
+}
 struct Machine {
+  uint64_t generation = 0;
   bool candidate = false, armed = false, active = false;
   double lastMotion = 0, entered = 0, lastPush = 0, until = 0, activated = 0;
   bool sawHold = false;
   Point sum{};
   std::string monitor;
+  Action activate(double now) {
+    active = true;
+    activated = now;
+    sawHold = false;
+    candidate = armed = false;
+    sum = {};
+    return Action::Enter;
+  }
   void reset() {
+    ++generation;
     candidate = armed = active = false;
     sum = {};
     monitor.clear();
@@ -133,11 +161,14 @@ struct Machine {
       return Action::None;
     }
     if (!hot || now < until) {
+      if (candidate)
+        ++generation;
       candidate = armed = false;
       sum = {};
       return Action::None;
     }
     if (!candidate) {
+      ++generation;
       candidate = true;
       entered = lastMotion = now;
       sum = {};
@@ -183,14 +214,50 @@ struct Machine {
       }
     }
     if (fire) {
-      active = true;
-      activated = now;
-      sawHold = false;
-      candidate = armed = false;
-      sum = {};
-      return Action::Enter;
+      return activate(now);
     }
     return Action::None;
+  }
+};
+// Complete on release, so cancelled gestures never dispatch. Each session is
+// bound to the candidate/output that existed at begin; reset/crossing
+// invalidates it.
+struct Swipe {
+  uint64_t generation = 0;
+  bool begun = false, invalid = false;
+  Point travel{};
+  std::string monitor;
+  bool begin(const Rule &r, const Machine &m, int fingers, double now) {
+    begun = r.mode == Mode::Swipe && r.fingers == fingers && m.candidate &&
+            !m.active && now >= m.until;
+    invalid = false;
+    travel = {};
+    monitor = m.monitor;
+    generation = m.generation;
+    return begun;
+  }
+  void update(const Rule &r, Point delta) {
+    if (!begun)
+      return;
+    auto d = swipeDirection(r.swipeDirection);
+    if ((d.x && delta.x * d.x < -r.noise) || (d.y && delta.y * d.y < -r.noise))
+      invalid = true;
+    travel.x += delta.x;
+    travel.y += delta.y;
+  }
+  Action end(const Rule &r, Machine &m, double now, bool cancelled) {
+    bool eligible = begun && !invalid && !cancelled && m.candidate &&
+                    !m.active && m.monitor == monitor &&
+                    m.generation == generation && now >= m.until;
+    auto d = swipeDirection(r.swipeDirection);
+    bool enough = (d.x == 0 || travel.x * d.x >= r.swipeDistance) &&
+                  (d.y == 0 || travel.y * d.y >= r.swipeDistance);
+    if (d.x == 0)
+      enough = enough && travel.y * d.y >= std::abs(travel.x);
+    if (d.y == 0)
+      enough = enough && travel.x * d.x >= std::abs(travel.y);
+    begun = false;
+    return eligible && enough ? m.activate(now) : Action::None;
   }
 };
 } // namespace edge

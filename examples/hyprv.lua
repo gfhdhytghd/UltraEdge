@@ -1,5 +1,5 @@
--- Offline-configured. Requires safely installed hypr-edge-trigger and updated Hymission.
-local edge = hl.plugin and hl.plugin.edge_trigger
+-- Offline-configured. Requires safely installed UltraEdge and updated Hymission.
+local edge = hl.plugin and hl.plugin.ultraedge
 if not edge or type(edge.rule) ~= "function" then return end
 edge.clear()
 

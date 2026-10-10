@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include <aquamarine/input/Input.hpp>
 #include <chrono>
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
@@ -13,6 +14,7 @@
 #include <hyprland/src/plugins/PluginAPI.hpp>
 #include <hyprland/src/pointer/PointerManager.hpp>
 #include <hyprland/src/state/MonitorState.hpp>
+#include <libinput.h>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -23,6 +25,7 @@ extern "C" {
 using Json = nlohmann::json;
 static HANDLE handle;
 static CFunctionHook *hook;
+static CFunctionHook *axisHook;
 static SP<CEventLoopTimer> timer;
 static std::vector<CHyprSignalListener> listeners;
 static bool paused = false, processing = false;
@@ -55,8 +58,20 @@ static edge::Rule parse(const Json &j) {
     r.mode = edge::Mode::Enter;
   else if (mode == "dwell")
     r.mode = edge::Mode::Dwell;
+  else if (mode == "swipe")
+    r.mode = edge::Mode::Swipe;
   else if (mode != "push")
     throw std::runtime_error("unknown mode");
+  if (j.contains("fingers") && !j["fingers"].is_number_integer())
+    throw std::runtime_error("fingers must be integer");
+  r.fingers = j.value("fingers", 3);
+  r.swipeDirection = j.value("direction", "right");
+  r.swipeDistance = j.value("swipe_distance", 40.);
+  r.consume = j.value("consume", true);
+  if (r.fingers < 2 || r.fingers > 4 ||
+      !edge::validSwipeDirection(r.swipeDirection) ||
+      !std::isfinite(r.swipeDistance) || r.swipeDistance <= 0)
+    throw std::runtime_error("invalid swipe fingers/direction/distance");
   r.band = j.value("band", 2.);
   r.pause = j.value("pause_ms", 180.);
   r.push = j.value("push", 8.);
@@ -209,11 +224,116 @@ static void mouse(CInputManager *self, IPointer::SMotionEvent e) {
       hook->m_original)(self, e);
   process({d.x, d.y}, true);
 }
+struct SwipeEntry {
+  std::shared_ptr<Binding> binding;
+  edge::Swipe swipe;
+};
+struct SwipeSession {
+  std::vector<SwipeEntry> entries;
+  bool captured = false;
+  void clear() {
+    entries.clear();
+    captured = false;
+  }
+  void begin(int fingers) {
+    clear();
+    process();
+    double t = now();
+    for (auto &b : rules) {
+      edge::Swipe swipe;
+      if (swipe.begin(b->rule, b->state, fingers, t)) {
+        entries.push_back({b, swipe});
+        captured = captured || b->rule.consume;
+      }
+    }
+  }
+  void update(edge::Point d) {
+    process();
+    for (auto &e : entries)
+      e.swipe.update(e.binding->rule, d);
+  }
+  void end(bool cancelled) {
+    process();
+    auto copy = std::move(entries);
+    bool wasProcessing = processing;
+    processing = true;
+    struct Guard {
+      bool previous;
+      ~Guard() { processing = previous; }
+    } guard{wasProcessing};
+    for (auto &e : copy) {
+      auto &b = *e.binding;
+      auto a = e.swipe.end(b.rule, b.state, now(), cancelled);
+      if (a != edge::Action::None) {
+        try {
+          if (!action(b, a)) {
+            b.state.reset();
+            b.state.until = now() + b.rule.cooldown;
+          }
+        } catch (const std::exception &ex) {
+          failure(ex.what());
+          b.state.reset();
+          b.state.until = now() + b.rule.cooldown;
+        }
+      }
+    }
+    captured = false;
+  }
+};
+static SwipeSession nativeSwipe, scrollSwipe;
+static WP<IPointer> scrollOwner;
+static unsigned scrollAxes = 0;
+static double lastScroll = 0;
+static void clearGestures() {
+  // Release Lua references, but swallow the remainder of an already captured
+  // stream. No new gesture may inherit the tail after pause/reload/layout
+  // changes.
+  nativeSwipe.entries.clear();
+  scrollSwipe.entries.clear();
+}
+static void wheel(CInputManager *self, IPointer::SAxisEvent e,
+                  SP<IPointer> pointer) {
+  bool eligible = false;
+  if (pointer && pointer->m_isTouchpad &&
+      e.source == WL_POINTER_AXIS_SOURCE_FINGER && pointer->aq())
+    if (auto *dev = pointer->aq()->getLibinputHandle())
+      eligible = libinput_device_config_scroll_get_method(dev) ==
+                 LIBINPUT_CONFIG_SCROLL_2FG;
+  bool consumed = false;
+  if (eligible) {
+    if (scrollOwner.lock() != pointer) {
+      scrollSwipe.end(true);
+      scrollOwner = pointer;
+      scrollAxes = 0;
+      scrollSwipe.clear();
+    }
+    if (!scrollAxes && e.delta != 0)
+      scrollSwipe.begin(2);
+    unsigned axis = e.axis == WL_POINTER_AXIS_VERTICAL_SCROLL ? 1 : 2;
+    if (e.delta != 0) {
+      scrollAxes |= axis;
+      lastScroll = now();
+      scrollSwipe.update(e.axis == WL_POINTER_AXIS_VERTICAL_SCROLL
+                             ? edge::Point{0, e.delta}
+                             : edge::Point{e.delta, 0});
+    }
+    consumed = scrollSwipe.captured;
+    if (e.delta == 0) {
+      scrollAxes &= ~axis;
+      if (!scrollAxes)
+        scrollSwipe.end(false);
+    }
+  }
+  if (!consumed)
+    reinterpret_cast<void (*)(CInputManager *, IPointer::SAxisEvent,
+                              SP<IPointer>)>(axisHook->m_original)(self, e,
+                                                                   pointer);
+}
 static int addRule(lua_State *L) {
   luaL_checktype(L, 1, LUA_TTABLE);
   try {
     Json j = Json::object();
-    for (auto key : {"target", "monitor", "mode"}) {
+    for (auto key : {"target", "monitor", "mode", "direction"}) {
       lua_getfield(L, 1, key);
       if (!lua_isnil(L, -1)) {
         if (lua_type(L, -1) != LUA_TSTRING) {
@@ -224,8 +344,9 @@ static int addRule(lua_State *L) {
       }
       lua_pop(L, 1);
     }
-    for (auto key : {"band", "pause_ms", "push", "noise", "exit_distance",
-                     "cooldown_ms", "dwell_ms", "burst_ms", "hold_wait_ms"}) {
+    for (auto key :
+         {"band", "pause_ms", "push", "noise", "exit_distance", "cooldown_ms",
+          "dwell_ms", "burst_ms", "hold_wait_ms", "swipe_distance"}) {
       lua_getfield(L, 1, key);
       if (!lua_isnil(L, -1)) {
         if (!lua_isnumber(L, -1)) {
@@ -236,6 +357,33 @@ static int addRule(lua_State *L) {
       }
       lua_pop(L, 1);
     }
+    lua_getfield(L, 1, "consume");
+    if (!lua_isnil(L, -1)) {
+      if (!lua_isboolean(L, -1)) {
+        lua_pop(L, 1);
+        throw std::runtime_error("consume must be boolean");
+      }
+      j["consume"] = bool(lua_toboolean(L, -1));
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "fingers");
+    if (!lua_isnil(L, -1)) {
+      if (!lua_isinteger(L, -1)) {
+        lua_pop(L, 1);
+        throw std::runtime_error("fingers must be integer");
+      }
+      j["fingers"] = lua_tointeger(L, -1);
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "swipe_distance");
+    if (!lua_isnil(L, -1)) {
+      if (!lua_isnumber(L, -1)) {
+        lua_pop(L, 1);
+        throw std::runtime_error("swipe_distance must be numeric");
+      }
+      j["swipe_distance"] = lua_tonumber(L, -1);
+    }
+    lua_pop(L, 1);
     auto b = std::make_shared<Binding>();
     b->rule = parse(j);
     b->L = L;
@@ -265,11 +413,13 @@ static int addRule(lua_State *L) {
   return 2;
 }
 static int clear(lua_State *) {
+  clearGestures();
   rules.clear();
   return 0;
 }
 static int pauseLua(lua_State *L) {
   paused = lua_toboolean(L, 1);
+  clearGestures();
   for (auto &b : rules)
     b->state.reset();
   return 0;
@@ -278,8 +428,7 @@ static void loadNative() {
   if (Config::mgr()->type() == Config::CONFIG_LUA)
     return;
   try {
-    static auto value =
-        CConfigValue<Config::STRING>("plugin:edge_trigger:rules");
+    static auto value = CConfigValue<Config::STRING>("plugin:ultraedge:rules");
     auto array = Json::parse(*value);
     if (!array.is_array())
       throw std::runtime_error("rules must be JSON array");
@@ -309,16 +458,17 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
       __hyprland_api_get_client_hash())
     throw std::runtime_error("Hyprland header/runtime hash mismatch");
   if (!HyprlandAPI::addConfigValueV2(
-          h, makeShared<Config::Values::CStringValue>(
-                 "plugin:edge_trigger:rules", "JSON rule array", "[]")))
+          h, makeShared<Config::Values::CStringValue>("plugin:ultraedge:rules",
+                                                      "JSON rule array", "[]")))
     throw std::runtime_error("config registration failed");
   if (Config::mgr()->type() != Config::CONFIG_LUA) {
     if (!HyprlandAPI::addDispatcherV2(
-            h, "edge_trigger:pause", [](std::string arg) {
+            h, "ultraedge:pause", [](std::string arg) {
               if (arg != "0" && arg != "1")
                 return SDispatchResult{.success = false,
                                        .error = "expected 0 or 1"};
               paused = arg == "1";
+              clearGestures();
               for (auto &b : rules)
                 b->state.reset();
               return SDispatchResult{};
@@ -326,9 +476,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
       throw std::runtime_error("pause dispatcher registration failed");
   }
   if (Config::mgr()->type() == Config::CONFIG_LUA) {
-    if (!HyprlandAPI::addLuaFunction(h, "edge_trigger", "rule", addRule) ||
-        !HyprlandAPI::addLuaFunction(h, "edge_trigger", "clear", clear) ||
-        !HyprlandAPI::addLuaFunction(h, "edge_trigger", "pause", pauseLua))
+    if (!HyprlandAPI::addLuaFunction(h, "ultraedge", "rule", addRule) ||
+        !HyprlandAPI::addLuaFunction(h, "ultraedge", "clear", clear) ||
+        !HyprlandAPI::addLuaFunction(h, "ultraedge", "pause", pauseLua))
       throw std::runtime_error("Lua registration failed");
   }
   void *address = nullptr;
@@ -341,22 +491,66 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
                                          reinterpret_cast<void *>(mouse));
   if (!hook || !hook->hook())
     throw std::runtime_error("relative motion hook failed");
+  void *wheelAddress = nullptr;
+  for (auto &f : HyprlandAPI::findFunctionsByName(h, "onMouseWheel"))
+    if (f.demangled.find("CInputManager::onMouseWheel(IPointer::SAxisEvent,") ==
+        0)
+      wheelAddress = f.address;
+  if (!wheelAddress)
+    throw std::runtime_error("missing touchpad axis ABI");
+  axisHook = HyprlandAPI::createFunctionHook(h, wheelAddress,
+                                             reinterpret_cast<void *>(wheel));
+  if (!axisHook || !axisHook->hook())
+    throw std::runtime_error("touchpad axis hook failed");
+  listeners.push_back(Event::bus()->m_events.gesture.swipe.begin.listen(
+      [](IPointer::SSwipeBeginEvent e, Event::SCallbackInfo &info) {
+        if (info.cancelled) {
+          nativeSwipe.clear();
+          return;
+        }
+        nativeSwipe.begin(e.fingers);
+        if (nativeSwipe.captured)
+          info.cancelled = true;
+      }));
+  listeners.push_back(Event::bus()->m_events.gesture.swipe.update.listen(
+      [](IPointer::SSwipeUpdateEvent e, Event::SCallbackInfo &info) {
+        if (info.cancelled)
+          for (auto &entry : nativeSwipe.entries)
+            entry.swipe.invalid = true;
+        nativeSwipe.update({e.delta.x, e.delta.y});
+        if (nativeSwipe.captured)
+          info.cancelled = true;
+      }));
+  listeners.push_back(Event::bus()->m_events.gesture.swipe.end.listen(
+      [](IPointer::SSwipeEndEvent e, Event::SCallbackInfo &info) {
+        bool captured = nativeSwipe.captured;
+        nativeSwipe.end(e.cancelled || info.cancelled);
+        if (captured)
+          info.cancelled = true;
+      }));
   // Animation ticks stop on idle desktops. Dwell/hold must keep working there.
   timer = makeShared<CEventLoopTimer>(
       std::chrono::milliseconds(16),
       [](SP<CEventLoopTimer> self, void *) {
         if (!rules.empty())
           process();
+        if (scrollAxes && now() - lastScroll >= 140) {
+          scrollSwipe.end(false);
+          scrollAxes = 0;
+          scrollOwner.reset();
+        }
         self->updateTimeout(std::chrono::milliseconds(16));
       },
       nullptr);
   g_pEventLoopManager->addTimer(timer);
   listeners.push_back(Event::bus()->m_events.exit.listen([] {
+    clearGestures();
     rules.clear();
     if (timer)
       timer->cancel();
   }));
   listeners.push_back(Event::bus()->m_events.config.preReload.listen([] {
+    clearGestures();
     rules.clear();
     paused = false;
     error.clear();
@@ -364,21 +558,24 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
   listeners.push_back(
       Event::bus()->m_events.config.reloaded.listen([] { loadNative(); }));
   listeners.push_back(Event::bus()->m_events.monitor.layoutChanged.listen([] {
+    clearGestures();
     for (auto &b : rules)
       b->state.reset();
   }));
   listeners.push_back(
       Event::bus()->m_events.monitor.added.listen([](PHLMONITOR) {
+        clearGestures();
         for (auto &b : rules)
           b->state.reset();
       }));
   listeners.push_back(
       Event::bus()->m_events.monitor.removed.listen([](PHLMONITOR) {
+        clearGestures();
         for (auto &b : rules)
           b->state.reset();
       }));
   status = HyprlandAPI::registerHyprCtlCommand(
-      h, {.name = "edge-trigger-state",
+      h, {.name = "ultraedge-state",
           .exact = true,
           .fn = [](eHyprCtlOutputFormat, std::string) {
             Json j = {
@@ -391,10 +588,15 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
             return j.dump();
           }});
   HyprlandAPI::reloadConfig();
-  return {"hypr-edge-trigger", "Exposed edge/corner triggers", "wilf", "0.1.0"};
+  return {"UltraEdge", "Exposed edge/corner triggers", "wilf", "0.2.0"};
 }
 APICALL EXPORT void PLUGIN_EXIT() {
   listeners.clear();
+  clearGestures();
+  if (axisHook) {
+    axisHook->unhook();
+    axisHook = nullptr;
+  }
   if (timer) {
     timer->cancel();
     if (g_pEventLoopManager)

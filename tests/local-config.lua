@@ -2,7 +2,7 @@
 local config=arg[1] or 'examples/hyprv.lua'
 local registrations,commands={},{}
 local windows={}
-hl={plugin={edge_trigger={clear=function() registrations={} end,rule=function(r) registrations[#registrations+1]=r;return true end},hymission={stage_open=function() end,stage_close=function() end,stage_region=function(name)return {x=-1000,y=-200,width=120,height=800}end}},get_windows=function()return windows end,exec_cmd=function(cmd)commands[#commands+1]=cmd end}
+hl={plugin={ultraedge={clear=function() registrations={} end,rule=function(r) registrations[#registrations+1]=r;return true end},hymission={stage_open=function() end,stage_close=function() end,stage_region=function(name)return {x=-1000,y=-200,width=120,height=800}end}},get_windows=function()return windows end,exec_cmd=function(cmd)commands[#commands+1]=cmd end}
 dofile(config)
 assert(#registrations==2)
 assert(registrations[1].hold('L').width==120)
@@ -18,5 +18,5 @@ registrations[2].on_enter("DP-1'$bad")
 assert(commands[1]=="bash /home/wilf/.config/HyprV/hypr/scripts/sidechat.sh show 'DP-1'\\''$bad'")
 registrations[2].on_exit();assert(commands[2]:match(' hide$'))
 hl.plugin.hymission={};dofile(config);assert(#registrations==1)
-hl.plugin.edge_trigger=nil;dofile(config)
+hl.plugin.ultraedge=nil;dofile(config)
 print('offline Lua guards, dynamic geometry, rotation, visibility and command quoting passed')

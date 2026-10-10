@@ -178,5 +178,78 @@ int main() {
   sample(s, r, {0, 400}, {}, 200, false);
   check(sample(s, r, {0, 400}, {-1, 100}, 210) == Action::None && !s.armed,
         "mostly tangent motion cannot count as push");
+  for (int fingers : {2, 3, 4})
+    for (auto dir : {"left", "right", "up", "down", "up-left", "down-right"}) {
+      r = {};
+      r.mode = Mode::Swipe;
+      r.fingers = fingers;
+      r.swipeDirection = dir;
+      s.reset();
+      Swipe swipe;
+      check(!swipe.begin(r, s, fingers, 0),
+            "swipe cannot start without edge arrival");
+      sample(s, r, {0, 400}, {}, 0, false);
+      check(!swipe.begin(r, s, fingers == 4 ? 3 : 4, 1),
+            "wrong finger count rejected");
+      check(swipe.begin(r, s, fingers, 2),
+            "matching swipe begins at exposed edge");
+      auto d = swipeDirection(dir);
+      swipe.update(r, {d.x * 45, d.y * 45});
+      check(!s.active, "no dispatch before swipe end");
+      check(swipe.end(r, s, 10, true) == Action::None,
+            "cancelled swipe never activates");
+      swipe.begin(r, s, fingers, 20);
+      swipe.update(r, {d.x * 45, d.y * 45});
+      check(swipe.end(r, s, 30, false) == Action::Enter,
+            "all finger counts and directions activate on end");
+      check(!swipe.begin(r, s, fingers, 31),
+            "active swipe latch cannot repeat");
+      check(sample(s, r, {100, 400}, {}, 40, false) == Action::Exit,
+            "swipe uses common paired exit");
+    }
+  r = {};
+  r.mode = Mode::Swipe;
+  r.swipeDirection = "right";
+  s.reset();
+  Swipe swipe;
+  sample(s, r, {0, 400}, {}, 0, false);
+  swipe.begin(r, s, 3, 1);
+  swipe.update(r, {39, 0});
+  check(swipe.end(r, s, 2, false) == Action::None,
+        "subthreshold swipe cannot fire");
+  swipe.begin(r, s, 3, 3);
+  swipe.update(r, {60, 0});
+  swipe.update(r, {-2, 0});
+  check(swipe.end(r, s, 4, false) == Action::None,
+        "swipe reversal invalidates gesture");
+  swipe.begin(r, s, 3, 5);
+  swipe.update(r, {50, 100});
+  check(swipe.end(r, s, 6, false) == Action::None,
+        "wrong dominant swipe direction rejected");
+  swipe.begin(r, s, 3, 7);
+  swipe.update(r, {60, 0});
+  sample(s, r, {50, 400}, {}, 8, false);
+  sample(s, r, {0, 400}, {}, 9, false);
+  check(swipe.end(r, s, 10, false) == Action::None,
+        "leave and return cannot inherit swipe");
+  swipe.begin(r, s, 3, 11);
+  swipe.update(r, {60, 0});
+  s.reset();
+  sample(s, r, {0, 400}, {}, 12, false);
+  check(swipe.end(r, s, 13, false) == Action::None,
+        "pause/reload/layout reset invalidates swipe generation");
+  r.target = "right";
+  s.reset();
+  s.step(r, pair, {-1, 300}, {}, 0, false);
+  check(!swipe.begin(r, s, 3, 1), "shared boundary cannot claim swipe");
+  s.reset();
+  s.step(r, pair, {-1, -100}, {}, 0, false);
+  swipe.begin(r, s, 3, 1);
+  swipe.update(r, {60, 0});
+  s.step(r, pair, {1, 100}, {}, 2, false);
+  s.step(r, pair, {-1, -100}, {}, 3, false);
+  s.step(r, pair, {-1, -100}, {}, 4, false);
+  check(swipe.end(r, s, 5, false) == Action::None,
+        "cross output and return cannot inherit swipe");
   std::cout << checks << " state-machine checks passed\n";
 }
