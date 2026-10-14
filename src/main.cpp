@@ -77,6 +77,9 @@ static edge::Rule parse(const Json &j) {
   r.band = j.value("band", 2.);
   r.pause = j.value("pause_ms", 180.);
   r.push = j.value("push", 8.);
+  r.pushAngle = j.value("push_angle", 90.);
+  if (!std::isfinite(r.pushAngle) || r.pushAngle <= 0 || r.pushAngle > 180)
+    throw std::runtime_error("push_angle must be finite and in (0, 180]");
   r.noise = j.value("noise", .5);
   r.exit = j.value("exit_distance", 80.);
   r.cooldown = j.value("cooldown_ms", 400.);
@@ -351,7 +354,7 @@ static int addRule(lua_State *L) {
     for (auto key :
          {"band", "pause_ms", "push", "noise", "exit_distance", "cooldown_ms",
           "dwell_ms", "burst_ms", "hold_wait_ms", "swipe_distance",
-          "move_ms", "movement_gap_ms"}) {
+          "move_ms", "movement_gap_ms", "push_angle"}) {
       lua_getfield(L, 1, key);
       if (!lua_isnil(L, -1)) {
         if (!lua_isnumber(L, -1)) {

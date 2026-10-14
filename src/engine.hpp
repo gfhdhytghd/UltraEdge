@@ -29,7 +29,8 @@ struct Rule {
   double swipeDistance = 40;
   bool consume = true;
   double band = 2, pause = 180, push = 8, noise = .5, exit = 80, cooldown = 400,
-         dwell = 300, burst = 160, holdWait = 0, move = 100, movementGap = 80;
+         dwell = 300, burst = 160, holdWait = 0, move = 100, movementGap = 80,
+         pushAngle = 90;
 };
 inline Point direction(const std::string &s) {
   return {s.find("left") != std::string::npos    ? -1.
@@ -43,6 +44,17 @@ inline bool validTarget(const std::string &s) {
   return s == "left" || s == "right" || s == "top" || s == "bottom" ||
          s == "top-left" || s == "top-right" || s == "bottom-left" ||
          s == "bottom-right";
+}
+// Full cone width centered on the edge normal (corner diagonal).
+inline bool towards(const Rule &r, Point delta) {
+  auto d = direction(r.target);
+  if ((d.x && delta.x * d.x <= r.noise) ||
+      (d.y && delta.y * d.y <= r.noise))
+    return false;
+  double dot = delta.x * d.x + delta.y * d.y;
+  double cross = delta.x * d.y - delta.y * d.x;
+  double deviation = std::atan2(std::abs(cross), dot);
+  return deviation <= r.pushAngle * std::acos(-1.) / 360. + 1e-12;
 }
 // Global logical rectangles, no physical pixel or output scale conversion.
 inline bool inBand(const Rule &r, const Rect &b, Point p, double width) {
@@ -185,14 +197,7 @@ struct Machine {
       if (moving && now - movementLast > r.movementGap)
         moving = false;
       if (motion && std::hypot(delta.x, delta.y) > r.noise) {
-        auto d = direction(r.target);
-        bool towards = (d.x == 0 || delta.x * d.x > r.noise) &&
-                       (d.y == 0 || delta.y * d.y > r.noise);
-        if (d.x == 0)
-          towards = towards && delta.y * d.y >= std::abs(delta.x);
-        if (d.y == 0)
-          towards = towards && delta.x * d.x >= std::abs(delta.y);
-        if (!towards)
+        if (!towards(r, delta))
           moving = false;
         else {
           if (!moving) {
@@ -216,15 +221,9 @@ struct Machine {
           lastMotion = now;
         else {
           auto d = direction(r.target);
-          bool towards = (d.x == 0 || delta.x * d.x > r.noise) &&
-                         (d.y == 0 || delta.y * d.y > r.noise);
-          if (d.x == 0)
-            towards = towards && delta.y * d.y >= std::abs(delta.x);
-          if (d.y == 0)
-            towards = towards && delta.x * d.x >= std::abs(delta.y);
           // Sideways / reverse movement breaks the second push and requires a
           // stop.
-          if (!towards) {
+          if (!towards(r, delta)) {
             armed = false;
             sum = {};
             lastMotion = now;

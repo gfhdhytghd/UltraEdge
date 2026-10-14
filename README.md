@@ -79,6 +79,7 @@ dwell examples, and [hyprv.lua](examples/hyprv.lua) for the local Stage/AI-HUB s
 | `mode` | `push` | `enter` immediately, `dwell` after dwell, `push` after stop + second movement; `move` after continuous outward movement; `swipe` after an edge-qualified touchpad gesture |
 | `band` | 2 | Edge band, logical pixels; corners must be within both bands |
 | `pause_ms` | 180 | Quiet period before second push can start |
+| `push_angle` | 90 | Full movement cone in degrees, centered on the outward edge normal (corner diagonal); range (0, 180], used by `move` and `push`. Outside motion interrupts progress. |
 | `push` | 8 | Outward motion accumulated per required axis |
 | `noise` | 0.5 | Ignore relative events at or below this vector magnitude |
 | `burst_ms` | 160 | Maximum gap between second-push events; longer gaps discard accumulation |
@@ -106,7 +107,8 @@ same relative motion consumed by the compositor (`delta` or `unaccel` according
 to `input:force_no_accel`, including touchpad axis flips), never the difference
 between clamped cursor positions. Tablet absolute motion and pointer warps can
 enter/dwell or exit, but cannot supply a second push. For an edge, outward
-movement must dominate tangent movement; for a corner, both axes must move
+movement must lie within `push_angle` (default 90°, ±45° from the outward
+normal); for a corner, the cone is centered on the diagonal and both axes must move
 outward beyond noise and accumulate `push` each. Arriving motion is discarded.
 Continuous movement, reversal and sideways movement require a new stop. Noise
 is per event and does not contribute to the push. No fabricated motion is used.
