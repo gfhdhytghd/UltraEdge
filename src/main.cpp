@@ -126,16 +126,20 @@ static std::optional<edge::Rect> rect(const Json &j) {
 static std::optional<edge::Rect> region(Binding &b) {
   try {
     if (b.L && b.region != LUA_NOREF) {
-      int top = lua_gettop(b.L);
+      struct StackGuard {
+        lua_State *L;
+        int top;
+        ~StackGuard() { lua_settop(L, top); }
+      } guard{b.L, lua_gettop(b.L)};
       if (!luaCall(b, b.region, 1, b.state.monitor))
         return {};
       Json j = nullptr;
       if (lua_istable(b.L, -1)) {
         j = Json::object();
         for (auto key : {"x", "y", "width", "height"}) {
-          lua_getfield(b.L, -1, key);
+          lua_pushstring(b.L, key);
+          lua_rawget(b.L, -2);
           if (!lua_isnumber(b.L, -1)) {
-            lua_settop(b.L, top);
             throw std::runtime_error(
                 "hold callback must return numeric rectangle or nil");
           }
@@ -143,10 +147,8 @@ static std::optional<edge::Rect> region(Binding &b) {
           lua_pop(b.L, 1);
         }
       } else if (!lua_isnil(b.L, -1)) {
-        lua_settop(b.L, top);
         throw std::runtime_error("hold callback must return rectangle or nil");
       }
-      lua_settop(b.L, top);
       return rect(j);
     }
     if (!b.regionCommand.empty())

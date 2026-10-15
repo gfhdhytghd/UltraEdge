@@ -34,6 +34,32 @@ static void coroutineCase(lua_State* L) {
  rules.clear();assert(lua_gettop(L)==0);
  std::cout<<"coroutine collected: callbacks and ref cleanup use main state PASS\n";
 }
+
+static void providerCase(lua_State* L,const char* body,bool expected,const char* expectedError="") {
+ rules.clear();error.clear();
+ std::string config="assert(edge.rule{mode='enter',on_enter=function()end,hold=function() "+std::string(body)+" end})";
+ run(L,config.c_str());
+ lua_pushinteger(L,123);int top=lua_gettop(L);
+ auto box=region(*rules[0]);assert(bool(box)==expected);
+ if(box) assert(box->x==1&&box->y==2&&box->w==80&&box->h==60);
+ assert(lua_gettop(L)==top&&lua_tointeger(L,-1)==123);
+ assert(error.find(expectedError)!=std::string::npos);
+ lua_pop(L,1);rules.clear();
+}
+static void providerCases(lua_State* L) {
+ providerCase(L,"return {x=1,y=2,width=80,height=60}",true);
+ providerCase(L,"return setmetatable({x=1,y=2,width=80,height=60},{__index=function() error('must not index') end})",true);
+ providerCase(L,"return setmetatable({}, {__index=function() error('must not index') end})",false,"numeric rectangle");
+ providerCase(L,"return nil",false);
+ providerCase(L,"return 42",false,"rectangle or nil");
+ providerCase(L,"return {x='bad',y=2,width=80,height=60}",false,"numeric rectangle");
+ providerCase(L,"return {x=1,y=2,width=0,height=60}",false,"invalid hold rectangle");
+ providerCase(L,"return {x=1,y=2,width=math.huge,height=60}",false,"invalid hold rectangle");
+ providerCase(L,"error('provider failed')",false,"provider failed");
+ providerCase(L,"error({})",false,"Lua callback failed");
+ assert(lua_gettop(L)==0);
+ std::cout<<"hold results: raw fields, errors, invalid values and stack restoration PASS\n";
+}
 int main() {
  auto* L=luaL_newstate();assert(L);luaL_openlibs(L);
  lua_newtable(L);lua_pushcfunction(L,addRule);lua_setfield(L,-2,"rule");
@@ -41,5 +67,6 @@ int main() {
  lua_pushcfunction(L,tick);lua_setglobal(L,"tick");
  lua_pushcfunction(L,hold);lua_setglobal(L,"hold");
  coroutineCase(L);
+ providerCases(L);
  rules.clear();lua_close(L);
 }
