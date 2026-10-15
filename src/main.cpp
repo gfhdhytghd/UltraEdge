@@ -1,23 +1,23 @@
 #include "engine.hpp"
 #include <aquamarine/input/Input.hpp>
 #include <chrono>
-#include <hyprland/src/config/ConfigManager.hpp>
-#include <hyprland/src/config/ConfigValue.hpp>
-#include <hyprland/src/config/values/types/StringValue.hpp>
-#include <hyprland/src/event/EventBus.hpp>
-#include <hyprland/src/managers/KeybindManager.hpp>
-#include <hyprland/src/managers/SessionLockManager.hpp>
-#include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
-#include <hyprland/src/managers/input/InputManager.hpp>
-#include <hyprland/src/output/Monitor.hpp>
-#include <hyprland/src/plugins/HookSystem.hpp>
-#include <hyprland/src/plugins/PluginAPI.hpp>
-#include <hyprland/src/pointer/PointerManager.hpp>
-#include <hyprland/src/state/MonitorState.hpp>
+#include <src/config/ConfigManager.hpp>
+#include <src/config/ConfigValue.hpp>
+#include <src/config/values/types/StringValue.hpp>
+#include <src/event/EventBus.hpp>
+#include <src/managers/SessionLockManager.hpp>
+#include <src/managers/eventLoop/EventLoopManager.hpp>
+#include <src/managers/input/InputManager.hpp>
+#include <src/output/Monitor.hpp>
+#include <src/plugins/HookSystem.hpp>
+#include <src/plugins/PluginAPI.hpp>
+#include <src/pointer/PointerManager.hpp>
+#include <src/state/MonitorState.hpp>
 #include <libinput.h>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <type_traits>
 extern "C" {
 #include <lauxlib.h>
 #include <lua.h>
@@ -26,6 +26,13 @@ using Json = nlohmann::json;
 static HANDLE handle;
 static CFunctionHook *hook;
 static CFunctionHook *axisHook;
+using MouseFn = void (*)(CInputManager *, IPointer::SMotionEvent);
+using WheelFn = void (*)(CInputManager *, IPointer::SAxisEvent, SP<IPointer>);
+static_assert(std::is_same_v<decltype(&CInputManager::onMouseMoved),
+                             void (CInputManager::*)(IPointer::SMotionEvent)>);
+static_assert(std::is_same_v<decltype(&CInputManager::onMouseWheel),
+                             void (CInputManager::*)(IPointer::SAxisEvent,
+                                                    SP<IPointer>)>);
 static SP<CEventLoopTimer> timer;
 static std::vector<CHyprSignalListener> listeners;
 static bool paused = false, processing = false;
@@ -38,7 +45,6 @@ static double now() {
 struct Binding {
   edge::Rule rule;
   edge::Machine state;
-  std::string enter, exit, enterArgs, exitArgs, regionCommand;
   lua_State *L = nullptr;
   int on = LUA_NOREF, off = LUA_NOREF, region = LUA_NOREF;
   ~Binding() {
@@ -146,37 +152,22 @@ static std::optional<edge::Rect> region(Binding &b) {
       lua_settop(b.L, top);
       return rect(j);
     }
-    if (!b.regionCommand.empty())
-      return rect(Json::parse(
-          HyprlandAPI::invokeHyprctlCommand(b.regionCommand, b.state.monitor)));
   } catch (const std::exception &e) {
     failure(e.what());
   }
   return {};
 }
 static bool action(Binding &b, edge::Action a) {
-  if (b.L) {
-    int ref = a == edge::Action::Enter ? b.on : b.off;
-    if (ref == LUA_NOREF)
-      return true;
-    if (!luaCall(b, ref, 1, b.state.monitor))
-      return false;
-    bool ok = !lua_isboolean(b.L, -1) || lua_toboolean(b.L, -1);
-    lua_pop(b.L, 1);
-    return ok;
-  }
-  auto name = a == edge::Action::Enter ? b.enter : b.exit;
-  if (name.empty())
+  // Hyprland development HEAD supports only Lua config; native actions are
+  // supplied by the same hl.dsp callbacks as other Lua rules.
+  int ref = a == edge::Action::Enter ? b.on : b.off;
+  if (ref == LUA_NOREF)
     return true;
-  auto it = g_pKeybindManager->m_dispatchers.find(name);
-  if (it == g_pKeybindManager->m_dispatchers.end()) {
-    failure("unknown native dispatcher: " + name);
+  if (!luaCall(b, ref, 1, b.state.monitor))
     return false;
-  }
-  auto result = it->second(a == edge::Action::Enter ? b.enterArgs : b.exitArgs);
-  if (!result.success)
-    failure(result.error);
-  return result.success;
+  bool ok = !lua_isboolean(b.L, -1) || lua_toboolean(b.L, -1);
+  lua_pop(b.L, 1);
+  return ok;
 }
 static void processImpl(edge::Point delta, bool motion) {
   if (processing)
@@ -194,7 +185,7 @@ static void processImpl(edge::Point delta, bool motion) {
   auto p = Pointer::mgr()->position();
   double t = now();
   for (auto &b : copy) {
-    bool dynamic = b->region != LUA_NOREF || !b->regionCommand.empty();
+    bool dynamic = b->region != LUA_NOREF;
     auto hold =
         b->state.active && dynamic ? region(*b) : std::optional<edge::Rect>{};
     auto a = b->state.step(b->rule, monitors, {p.x, p.y}, delta, t, motion,
@@ -224,8 +215,7 @@ static void mouse(CInputManager *self, IPointer::SMotionEvent e) {
     if (e.device->m_flipY)
       d.y = -d.y;
   }
-  reinterpret_cast<void (*)(CInputManager *, IPointer::SMotionEvent)>(
-      hook->m_original)(self, e);
+  reinterpret_cast<MouseFn>(hook->m_original)(self, e);
   process({d.x, d.y}, true);
 }
 struct SwipeEntry {
@@ -329,10 +319,10 @@ static void wheel(CInputManager *self, IPointer::SAxisEvent e,
     }
   }
   if (!consumed)
-    reinterpret_cast<void (*)(CInputManager *, IPointer::SAxisEvent,
-                              SP<IPointer>)>(axisHook->m_original)(self, e,
-                                                                   pointer);
+    reinterpret_cast<WheelFn>(axisHook->m_original)(self, e, pointer);
 }
+static_assert(std::is_same_v<decltype(&mouse), MouseFn>);
+static_assert(std::is_same_v<decltype(&wheel), WheelFn>);
 static int addRule(lua_State *L) {
   luaL_checktype(L, 1, LUA_TTABLE);
   try {
@@ -429,33 +419,7 @@ static int pauseLua(lua_State *L) {
     b->state.reset();
   return 0;
 }
-static void loadNative() {
-  if (Config::mgr()->type() == Config::CONFIG_LUA)
-    return;
-  try {
-    static auto value = CConfigValue<Config::STRING>("plugin:ultraedge:rules");
-    auto array = Json::parse(*value);
-    if (!array.is_array())
-      throw std::runtime_error("rules must be JSON array");
-    std::vector<std::shared_ptr<Binding>> next;
-    for (auto &j : array) {
-      auto b = std::make_shared<Binding>();
-      b->rule = parse(j);
-      b->enter = j.at("on_enter");
-      b->exit = j.value("on_exit", "");
-      b->enterArgs = j.value("enter_args", "");
-      b->exitArgs = j.value("exit_args", "");
-      b->regionCommand = j.value("hold_command", "");
-      next.push_back(b);
-    }
-    rules = std::move(next);
-    error.clear();
-  } catch (const std::exception &e) {
-    rules.clear();
-    failure(e.what());
-  }
-}
-static SP<SHyprCtlCommand> status;
+static SP<IPC::Socket1::SCommand> status;
 APICALL EXPORT std::string PLUGIN_API_VERSION() { return HYPRLAND_API_VERSION; }
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
   handle = h;
@@ -479,20 +443,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
           h, makeShared<Config::Values::CStringValue>("plugin:ultraedge:rules",
                                                       "JSON rule array", "[]")))
     throw std::runtime_error("config registration failed");
-  if (Config::mgr()->type() != Config::CONFIG_LUA) {
-    if (!HyprlandAPI::addDispatcherV2(
-            h, "ultraedge:pause", [](std::string arg) {
-              if (arg != "0" && arg != "1")
-                return SDispatchResult{.success = false,
-                                       .error = "expected 0 or 1"};
-              paused = arg == "1";
-              clearGestures();
-              for (auto &b : rules)
-                b->state.reset();
-              return SDispatchResult{};
-            }))
-      throw std::runtime_error("pause dispatcher registration failed");
-  }
   if (Config::mgr()->type() == Config::CONFIG_LUA) {
     if (!HyprlandAPI::addLuaFunction(h, "ultraedge", "rule", addRule) ||
         !HyprlandAPI::addLuaFunction(h, "ultraedge", "clear", clear) ||
@@ -500,22 +450,28 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
       throw std::runtime_error("Lua registration failed");
   }
   void *address = nullptr;
+  size_t matches = 0;
   for (auto &f : HyprlandAPI::findFunctionsByName(h, "onMouseMoved"))
-    if (f.demangled == "CInputManager::onMouseMoved(IPointer::SMotionEvent)")
+    if (f.demangled == "CInputManager::onMouseMoved(IPointer::SMotionEvent)") {
       address = f.address;
-  if (!address)
-    throw std::runtime_error("missing relative motion ABI");
+      ++matches;
+    }
+  if (!address || matches != 1)
+    throw std::runtime_error("expected exactly one relative motion ABI target");
   hook = HyprlandAPI::createFunctionHook(h, address,
                                          reinterpret_cast<void *>(mouse));
   if (!hook || !hook->hook())
     throw std::runtime_error("relative motion hook failed");
   void *wheelAddress = nullptr;
+  matches = 0;
   for (auto &f : HyprlandAPI::findFunctionsByName(h, "onMouseWheel"))
-    if (f.demangled.find("CInputManager::onMouseWheel(IPointer::SAxisEvent,") ==
-        0)
+    if (f.demangled == "CInputManager::onMouseWheel(IPointer::SAxisEvent, "
+                       "Hyprutils::Memory::CSharedPointer<IPointer>)") {
       wheelAddress = f.address;
-  if (!wheelAddress)
-    throw std::runtime_error("missing touchpad axis ABI");
+      ++matches;
+    }
+  if (!wheelAddress || matches != 1)
+    throw std::runtime_error("expected exactly one touchpad axis ABI target");
   axisHook = HyprlandAPI::createFunctionHook(h, wheelAddress,
                                              reinterpret_cast<void *>(wheel));
   if (!axisHook || !axisHook->hook())
@@ -573,8 +529,6 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
     paused = false;
     error.clear();
   }));
-  listeners.push_back(
-      Event::bus()->m_events.config.reloaded.listen([] { loadNative(); }));
   listeners.push_back(Event::bus()->m_events.monitor.layoutChanged.listen([] {
     clearGestures();
     for (auto &b : rules)
@@ -594,8 +548,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
       }));
   status = HyprlandAPI::registerHyprCtlCommand(
       h, {.name = "ultraedge-state",
-          .exact = true,
-          .fn = [](eHyprCtlOutputFormat, std::string) {
+          .match = IPC::Socket1::COMMAND_MATCH_EXACT,
+          .handler = [](const IPC::Socket1::SRequest &) -> IPC::Socket1::SResponse {
             Json j = {
                 {"paused", paused}, {"error", error}, {"rules", Json::array()}};
             for (auto &b : rules)

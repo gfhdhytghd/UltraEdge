@@ -8,7 +8,12 @@ if(BUILD_PLUGIN)
  find_package(PkgConfig REQUIRED)
  pkg_check_modules(HYPR REQUIRED IMPORTED_TARGET hyprland)
  pkg_check_modules(LUA REQUIRED IMPORTED_TARGET lua)
+ # Resolve <src/...> only through the selected pkg-config header tree. Old
+ # <hyprland/src/...> includes can silently fall back to system headers.
+ find_path(HYPR_HEADER_ROOT NAMES src/plugins/PluginAPI.hpp
+           PATHS ${HYPR_INCLUDE_DIRS} NO_DEFAULT_PATH REQUIRED)
  add_library(UltraEdge SHARED src/main.cpp)
+ target_include_directories(UltraEdge PRIVATE ${HYPR_HEADER_ROOT})
  target_link_libraries(UltraEdge PRIVATE PkgConfig::HYPR PkgConfig::LUA)
  target_compile_options(UltraEdge PRIVATE -Wall -Wextra -Wno-unused-parameter -fno-gnu-unique)
  target_compile_definitions(UltraEdge PRIVATE WLR_USE_UNSTABLE)

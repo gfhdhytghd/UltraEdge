@@ -1,6 +1,6 @@
 # UltraEdge
 
-Independent Hyprland 0.56.2 plugin for exposed edges and corners. Supports basic
+Independent Hyprland development HEAD plugin for exposed edges and corners. Supports basic
 hot edges/corners and a deliberate **arrive → stop → push again** gesture, plus edge-qualified
 two/three/four-finger directional touchpad gestures and configurable continuous
 outward pointer movement (`move_ms`, default 100ms), from mouse or touchpad. No
@@ -33,7 +33,10 @@ ctest --test-dir build-engine --output-on-failure
 ```
 
 `hyprpm.toml` builds the plugin and tests; no install command or helper process is
-included. The output is `build/libUltraEdge.so`. This repository has no
+included. The output is `build/libUltraEdge.so`. Use separate build directories
+and the matching `PKG_CONFIG_PATH` for each compositor/header target. Both input
+hook signatures are checked at compile time and each lookup must match exactly
+one native function at load. This repository has no
 remote requirement. Add/install/update only from a safe user-controlled session;
 plugin updates and loads change the running compositor. The authoring workflow
 here does not install, load/unload, update, inject input, push or publish.
@@ -66,10 +69,12 @@ end
 
 Lua uses actual function callbacks, including native actions via `hl.dsp` /
 `hl.exec_cmd` and plugin-owned Lua APIs. It does **not** pretend a plugin string
-dispatcher is registered: Hyprland's Lua-only builds can reject
-`addDispatcherV2`. Native dispatcher strings are supported only with the legacy
-parser, through `plugin:ultraedge:rules`, a JSON array. See
-[legacy.conf](examples/legacy.conf), [basic.lua](examples/basic.lua) for enter and
+dispatcher is registered: development HEAD has removed the legacy parser and
+`addDispatcherV2` always returns false. Legacy JSON dispatcher rules and
+`ultraedge:pause` strings are unavailable on this branch; use Lua callbacks and
+`hl.plugin.ultraedge.pause(boolean)`. The old
+[legacy.conf](examples/legacy.conf) is retained as a historical example. See
+[basic.lua](examples/basic.lua) for enter and
 dwell examples, and [hyprv.lua](examples/hyprv.lua) for the local Stage/AI-HUB setup.
 
 | Field | Default | Meaning |
