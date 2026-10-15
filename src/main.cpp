@@ -394,7 +394,10 @@ static int addRule(lua_State *L) {
     lua_pop(L, 1);
     auto b = std::make_shared<Binding>();
     b->rule = parse(j);
-    b->L = L;
+    // The registry is shared, but the caller may be a collectable coroutine.
+    lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
+    b->L = lua_tothread(L, -1);
+    lua_pop(L, 1);
     for (auto pair :
          {std::pair{"on_enter", &b->on}, std::pair{"on_exit", &b->off},
           std::pair{"hold", &b->region}}) {

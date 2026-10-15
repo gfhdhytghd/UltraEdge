@@ -7,3 +7,6 @@ if lua.found()
   test('offline-gesture-config', lua, args: [files('tests/gesture-config.lua'), meson.current_source_dir() / 'examples/gestures.lua'])
   test('offline-lua-config', lua, args: [files('tests/local-config.lua'), meson.current_source_dir() / 'examples/hyprv.lua'])
 endif
+
+python = find_program('python3')
+test('plugin-lua-input-regression', python, args: [files('tests/plugin_regression.py'), '--build-dir', meson.current_build_dir() / 'plugin-regression', '--cxx', meson.get_compiler('cpp').cmd_array()[0]])

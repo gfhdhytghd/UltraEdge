@@ -18,6 +18,12 @@ if(BUILD_TESTING)
  add_executable(edge-tests tests/engine.cpp)
  target_include_directories(edge-tests PRIVATE src)
  add_test(NAME edge-state-machine COMMAND edge-tests)
+ find_package(Python3 REQUIRED COMPONENTS Interpreter)
+ find_package(PkgConfig REQUIRED)
+ pkg_check_modules(TEST_LUA REQUIRED lua)
+ add_test(NAME plugin-lua-input-regression
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/plugin_regression.py
+     --build-dir ${CMAKE_CURRENT_BINARY_DIR}/plugin-regression --cxx ${CMAKE_CXX_COMPILER})
  find_program(LUA_PROGRAM lua)
  if(LUA_PROGRAM)
   add_test(NAME offline-gesture-config COMMAND ${LUA_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gesture-config.lua ${CMAKE_CURRENT_SOURCE_DIR}/examples/gestures.lua)
