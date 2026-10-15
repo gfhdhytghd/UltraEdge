@@ -69,11 +69,12 @@ static CFunctionHook motionHook, wheelHook;
 static CFunctionHook* hook=&motionHook;
 static CFunctionHook* axisHook=&wheelHook;
 namespace PROTO {struct Capture {bool active=false;bool isCaptured(){return active;}};static Capture capture;static Capture* inputCapture=&capture;}
+static int captureScans=0,captureLookups=0,captureQueries=0;
 static bool viewflowCaptured=false,viewflowExport=true;
-static bool viewflowQuery(){return viewflowCaptured;}
+static bool viewflowQuery(){++captureQueries;return viewflowCaptured;}
 struct FakePlugin {std::string m_name="viewflow-hyprland";void* m_handle=this;};
-struct FakePlugins {FakePlugin plugin;bool loaded=true;std::vector<FakePlugin*> getAllPlugins(){return loaded?std::vector<FakePlugin*>{&plugin}:std::vector<FakePlugin*>{};}};
+struct FakePlugins {FakePlugin plugin;bool loaded=true;std::vector<FakePlugin*> getAllPlugins(){++captureScans;return loaded?std::vector<FakePlugin*>{&plugin}:std::vector<FakePlugin*>{};}};
 static FakePlugins plugins;
 static FakePlugins* g_pPluginSystem=&plugins;
-static void* dlsym(void*,const char*){return viewflowExport?reinterpret_cast<void*>(viewflowQuery):nullptr;}
+static void* dlsym(void*,const char*){++captureLookups;return viewflowExport?reinterpret_cast<void*>(viewflowQuery):nullptr;}
 struct CEventLoopTimer {void updateTimeout(std::chrono::milliseconds){}};

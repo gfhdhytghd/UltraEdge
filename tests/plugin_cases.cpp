@@ -132,6 +132,49 @@ static void captureCases(lua_State* L) {
  resetCapture();assert(lua_gettop(L)==0);
  std::cout<<"capture changes during callbacks and Viewflow export lifecycle PASS\n";
 }
+
+static void captureQueryCases(lua_State* L) {
+ resetCapture();
+ run(L,"assert(edge.rule{mode='enter',on_enter=tick,hold=hold});assert(edge.rule{mode='enter',on_enter=tick,hold=hold})");
+ auto once=[&](auto call) {
+  captureScans=captureLookups=captureQueries=0;
+  call();
+  assert(captureScans==1&&captureLookups==1&&captureQueries==1);
+ };
+ once([&]{process();});assert(ticks==2);
+ once([&]{process();});assert(holds==2);
+ once([&]{mouse(nullptr,{});});
+ once([&]{timerTick(std::make_shared<CEventLoopTimer>(),nullptr);});
+ once([&]{region(*rules[0]);});
+ once([&]{action(*rules[0],edge::Action::Enter);});
+ resetCapture();
+ run(L,"assert(edge.rule{mode='swipe',fingers=2,direction='down',on_enter=tick,consume=true})");
+ auto pointer=std::make_shared<IPointer>();
+ once([&]{wheel(nullptr,{60,WL_POINTER_AXIS_VERTICAL_SCROLL,WL_POINTER_AXIS_SOURCE_FINGER},pointer);});
+ // One timer invocation calls both process and swipe end on scroll timeout.
+ fakeTime+=200;
+ once([&]{timerTick(std::make_shared<CEventLoopTimer>(),nullptr);});
+ assert(ticks==1);
+ resetCapture();
+ run(L,"assert(edge.rule{mode='swipe',fingers=3,direction='right',on_enter=tick,consume=true})");
+ once([&]{Event::SCallbackInfo info;swipeBegin({3},info);assert(info.cancelled);});
+ once([&]{Event::SCallbackInfo info;swipeUpdate({{60,0}},info);assert(info.cancelled);});
+ once([&]{Event::SCallbackInfo info;swipeEnd({false},info);assert(info.cancelled);});
+ assert(ticks==1);
+ once([&]{nativeSwipe.begin(3);});
+ once([&]{nativeSwipe.update({60,0});});
+ once([&]{nativeSwipe.end(false);});
+ // Snapshots must not survive an entry return or cache an optional export.
+ resetCapture();viewflowCaptured=true;
+ once([&]{process();});
+ viewflowCaptured=false;viewflowExport=false;
+ captureScans=captureLookups=captureQueries=0;process();
+ assert(captureScans==1&&captureLookups==1&&captureQueries==0);
+ viewflowExport=true;
+ once([&]{process();});
+ resetCapture();
+ std::cout<<"capture resolution: once per entry across nested rules/process/swipe/timer, no cross-entry cache PASS\n";
+}
 int main() {
  auto* L=luaL_newstate();assert(L);luaL_openlibs(L);
  lua_newtable(L);lua_pushcfunction(L,addRule);lua_setfield(L,-2,"rule");
@@ -141,5 +184,6 @@ int main() {
  coroutineCase(L);
  providerCases(L);
  captureCases(L);
+ captureQueryCases(L);
  rules.clear();lua_close(L);
 }

@@ -38,6 +38,29 @@ static double now() {
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
+static bool inputCaptured();
+
+namespace {
+// Nested processing belongs to the same synchronous input/timer invocation.
+// Cache the capture snapshot only for that invocation, never a plugin export
+// or handle across event-loop turns or plugin unload/reload.
+struct CaptureScope {
+  inline static unsigned depth = 0;
+  inline static bool captured = false;
+  CaptureScope() {
+    if (depth == 0)
+      captured = inputCaptured();
+    ++depth;
+  }
+  ~CaptureScope() {
+    if (--depth == 0)
+      captured = false;
+  }
+  CaptureScope(const CaptureScope &) = delete;
+  CaptureScope &operator=(const CaptureScope &) = delete;
+};
+} // namespace
+
 static bool localInputAllowed();
 
 struct Binding {
@@ -129,6 +152,7 @@ static std::optional<edge::Rect> rect(const Json &j) {
   return b;
 }
 static std::optional<edge::Rect> region(Binding &b) {
+  CaptureScope capture;
   if (!localInputAllowed())
     return {};
   try {
@@ -167,6 +191,7 @@ static std::optional<edge::Rect> region(Binding &b) {
   return {};
 }
 static bool action(Binding &b, edge::Action a) {
+  CaptureScope capture;
   if (!localInputAllowed())
     return false;
   if (b.L) {
@@ -229,12 +254,14 @@ static void processImpl(edge::Point delta, bool motion) {
 }
 static void process(edge::Point delta = {}, bool motion = false) {
   try {
+    CaptureScope capture;
     processImpl(delta, motion);
   } catch (const std::exception &e) {
     failure(e.what());
   }
 }
 static void mouse(CInputManager *self, IPointer::SMotionEvent e) {
+  CaptureScope capture;
   if (!localInputAllowed()) {
     reinterpret_cast<void (*)(CInputManager *, IPointer::SMotionEvent)>(
         hook->m_original)(self, e);
@@ -266,6 +293,7 @@ struct SwipeSession {
     captured = false;
   }
   void begin(int fingers) {
+    CaptureScope capture;
     clear();
     if (!localInputAllowed())
       return;
@@ -282,6 +310,7 @@ struct SwipeSession {
     }
   }
   void update(edge::Point d) {
+    CaptureScope capture;
     if (!localInputAllowed())
       return;
     process();
@@ -291,6 +320,7 @@ struct SwipeSession {
       e.swipe.update(e.binding->rule, d);
   }
   void end(bool cancelled) {
+    CaptureScope capture;
     if (!localInputAllowed())
       return;
     process();
@@ -358,7 +388,11 @@ static bool inputCaptured() {
   return false;
 }
 static bool localInputAllowed() {
-  if (!inputCaptured())
+  CaptureScope capture;
+  // Preserve capture starting inside a Lua/dispatcher/original-hook callback.
+  // This cheap native check does not repeat plugin traversal or dlsym.
+  if (!CaptureScope::captured &&
+      !(PROTO::inputCapture && PROTO::inputCapture->isCaptured()))
     return true;
   nativeSwipe.clear();
   scrollSwipe.clear();
@@ -371,6 +405,7 @@ static bool localInputAllowed() {
 }
 static void wheel(CInputManager *self, IPointer::SAxisEvent e,
                   SP<IPointer> pointer) {
+  CaptureScope capture;
   if (!localInputAllowed()) {
     reinterpret_cast<void (*)(CInputManager *, IPointer::SAxisEvent,
                               SP<IPointer>)>(axisHook->m_original)(self, e,
@@ -607,6 +642,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
     throw std::runtime_error("touchpad axis hook failed");
   listeners.push_back(Event::bus()->m_events.gesture.swipe.begin.listen(
       [](IPointer::SSwipeBeginEvent e, Event::SCallbackInfo &info) {
+        CaptureScope capture;
         if (!localInputAllowed())
           return;
         if (info.cancelled) {
@@ -619,6 +655,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
       }));
   listeners.push_back(Event::bus()->m_events.gesture.swipe.update.listen(
       [](IPointer::SSwipeUpdateEvent e, Event::SCallbackInfo &info) {
+        CaptureScope capture;
         if (!localInputAllowed())
           return;
         if (info.cancelled)
@@ -630,6 +667,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
       }));
   listeners.push_back(Event::bus()->m_events.gesture.swipe.end.listen(
       [](IPointer::SSwipeEndEvent e, Event::SCallbackInfo &info) {
+        CaptureScope capture;
         if (!localInputAllowed())
           return;
         bool captured = nativeSwipe.captured;
@@ -641,6 +679,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
   timer = makeShared<CEventLoopTimer>(
       std::chrono::milliseconds(16),
       [](SP<CEventLoopTimer> self, void *) {
+        CaptureScope capture;
         if (!rules.empty())
           process();
         if (scrollAxes && now() - lastScroll >= 140) {
