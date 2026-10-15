@@ -60,6 +60,78 @@ static void providerCases(lua_State* L) {
  assert(lua_gettop(L)==0);
  std::cout<<"hold results: raw fields, errors, invalid values and stack restoration PASS\n";
 }
+
+static int originalMotions=0,originalAxes=0;
+static void stockMouse(CInputManager*,IPointer::SMotionEvent) {++originalMotions;}
+static void stockAxis(CInputManager*,IPointer::SAxisEvent,SP<IPointer>) {++originalAxes;}
+static int captureProvider(lua_State* L) {PROTO::capture.active=true;return hold(L);}
+static int captureAction(lua_State*) {PROTO::capture.active=true;return 0;}
+static void resetCapture() {
+ PROTO::capture.active=false;viewflowCaptured=false;viewflowExport=true;plugins.loaded=true;
+ nativeSwipe.clear();scrollSwipe.clear();scrollOwner.reset();scrollAxes=0;lastScroll=0;
+ rules.clear();paused=false;fakeTime=1000;ticks=holds=originalMotions=originalAxes=0;
+ motionHook.m_original=reinterpret_cast<void*>(stockMouse);
+ wheelHook.m_original=reinterpret_cast<void*>(stockAxis);
+}
+static void captureCases(lua_State* L) {
+ auto timer=std::make_shared<CEventLoopTimer>();
+ for(bool viewflow:{false,true}) {
+  auto capture=[&](bool active){if(viewflow)viewflowCaptured=active;else PROTO::capture.active=active;};
+  resetCapture();
+  run(L,"assert(edge.rule{mode='dwell',dwell_ms=300,on_enter=tick})");
+  timerTick(timer,nullptr);assert(ticks==0&&rules[0]->state.candidate);
+  capture(true);fakeTime=1301;timerTick(timer,nullptr);
+  assert(ticks==0&&!rules[0]->state.candidate&&!rules[0]->state.active);
+  capture(false);timerTick(timer,nullptr);assert(ticks==0);
+  fakeTime=1602;timerTick(timer,nullptr);assert(ticks==1);
+  resetCapture();
+  run(L,"assert(edge.rule{mode='enter',on_enter=tick,hold=hold})");
+  process();assert(ticks==1&&rules[0]->state.active);
+  capture(true);timerTick(timer,nullptr);
+  assert(holds==0&&ticks==1&&!rules[0]->state.active);
+  assert(!region(*rules[0]));assert(!action(*rules[0],edge::Action::Enter));
+  assert(holds==0&&ticks==1);
+  resetCapture();
+  run(L,"assert(edge.rule{mode='swipe',fingers=2,direction='down',on_enter=tick,consume=true})");
+  auto pointer=std::make_shared<IPointer>();
+  wheel(nullptr,{60,WL_POINTER_AXIS_VERTICAL_SCROLL,WL_POINTER_AXIS_SOURCE_FINGER},pointer);
+  assert(scrollSwipe.captured&&scrollAxes&&originalAxes==0);
+  capture(true);
+  wheel(nullptr,{5,WL_POINTER_AXIS_VERTICAL_SCROLL,WL_POINTER_AXIS_SOURCE_FINGER},pointer);
+  wheel(nullptr,{0,WL_POINTER_AXIS_VERTICAL_SCROLL,WL_POINTER_AXIS_SOURCE_FINGER},pointer);
+  mouse(nullptr,{});
+  assert(originalAxes==2&&originalMotions==1&&ticks==0);
+  assert(!scrollSwipe.captured&&scrollSwipe.entries.empty()&&scrollAxes==0&&scrollOwner.expired());
+  // New events while captured must pass through, too.
+  wheel(nullptr,{60,WL_POINTER_AXIS_VERTICAL_SCROLL,WL_POINTER_AXIS_SOURCE_FINGER},pointer);
+  assert(originalAxes==3&&ticks==0);
+  resetCapture();
+  run(L,"assert(edge.rule{mode='swipe',fingers=3,direction='right',on_enter=tick,consume=true})");
+  Event::SCallbackInfo begin;swipeBegin({3},begin);assert(begin.cancelled&&nativeSwipe.captured);
+  Event::SCallbackInfo update;swipeUpdate({{60,0}},update);assert(update.cancelled);
+  capture(true);Event::SCallbackInfo end;swipeEnd({false},end);
+  assert(!end.cancelled&&ticks==0&&!nativeSwipe.captured&&nativeSwipe.entries.empty());
+  Event::SCallbackInfo remoteBegin,remoteUpdate,remoteEnd;
+  swipeBegin({3},remoteBegin);swipeUpdate({{60,0}},remoteUpdate);swipeEnd({false},remoteEnd);
+  assert(!remoteBegin.cancelled&&!remoteUpdate.cancelled&&!remoteEnd.cancelled&&ticks==0);
+  std::cout<<(viewflow?"Viewflow":"native")<<" capture: timer/provider/swipe reset and original mouse/axis forwarding PASS\n";
+ }
+ resetCapture();
+ lua_pushcfunction(L,captureProvider);lua_setglobal(L,"captureProvider");
+ lua_pushcfunction(L,captureAction);lua_setglobal(L,"captureAction");
+ run(L,"assert(edge.rule{mode='enter',on_enter=tick,on_exit=tick,hold=captureProvider})");
+ process();assert(ticks==1);process();
+ assert(PROTO::capture.active&&holds==1&&ticks==1&&!rules[0]->state.active&&rules[0]->state.until==0);
+ resetCapture();
+ run(L,"assert(edge.rule{mode='enter',on_enter=captureAction});assert(edge.rule{mode='enter',on_enter=tick})");
+ process();assert(PROTO::capture.active&&ticks==0);
+ for(auto& b:rules)assert(!b->state.active&&b->state.until==0);
+ resetCapture();viewflowCaptured=true;viewflowExport=false;assert(localInputAllowed());
+ viewflowExport=true;plugins.loaded=false;assert(localInputAllowed());
+ plugins.loaded=true;assert(!localInputAllowed());
+ resetCapture();assert(lua_gettop(L)==0);
+ std::cout<<"capture changes during callbacks and Viewflow export lifecycle PASS\n";
+}
 int main() {
  auto* L=luaL_newstate();assert(L);luaL_openlibs(L);
  lua_newtable(L);lua_pushcfunction(L,addRule);lua_setfield(L,-2,"rule");
@@ -68,5 +140,6 @@ int main() {
  lua_pushcfunction(L,hold);lua_setglobal(L,"hold");
  coroutineCase(L);
  providerCases(L);
+ captureCases(L);
  rules.clear();lua_close(L);
 }

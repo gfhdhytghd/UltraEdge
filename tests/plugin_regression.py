@@ -14,14 +14,24 @@ fixtures = Path(__file__).resolve().parent
 source = (root / "src/main.cpp").read_text()
 bodies = source[source.index("struct Binding {"):source.index("static void mouse(")]
 config = source[source.index("static int addRule("):source.index("static void loadNative(")]
-code = ((fixtures / "plugin_host.hpp").read_text() + bodies +
-        "\nstatic void clearGestures() {}\n" + config +
+declarations = source[source.index("static bool localInputAllowed();"):source.index("struct Binding {")]
+inputs = source[source.index("static void mouse("):source.index("static int addRule(")]
+timer_start = source.index("[](SP<CEventLoopTimer> self, void *)")
+timer_end = source.index("},\n      nullptr", timer_start) + 1
+timer = "\nstatic auto timerTick = " + source[timer_start:timer_end] + ";\n"
+listeners = ""
+for name in ("Begin", "Update", "End"):
+    start = source.index("[](IPointer::SSwipe" + name + "Event e,")
+    end = source.index("}));", start) + 1
+    listeners += "\nstatic auto swipe" + name + " = " + source[start:end] + ";\n"
+code = ((fixtures / "plugin_host.hpp").read_text() + declarations + bodies +
+        inputs + config + timer + listeners +
         (fixtures / "plugin_cases.cpp").read_text())
 args.build_dir.mkdir(parents=True, exist_ok=True)
 cpp = args.build_dir / "plugin_regression.cpp"
 exe = args.build_dir / "plugin_regression"
 cpp.write_text(code)
 flags = shlex.split(subprocess.check_output(["pkg-config", "--cflags", "--libs", "lua"], text=True))
-subprocess.run([args.cxx, "-std=c++23", "-O0", "-g", "-I" + str(root / "src"),
+subprocess.run([*shlex.split(args.cxx), "-std=c++23", "-O0", "-g", "-I" + str(root / "src"),
                 str(cpp), "-o", str(exe), *flags], check=True)
 subprocess.run([str(exe)], check=True)
