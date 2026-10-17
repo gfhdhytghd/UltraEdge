@@ -8,13 +8,14 @@ if(BUILD_PLUGIN)
  find_package(PkgConfig REQUIRED)
  pkg_check_modules(HYPR REQUIRED IMPORTED_TARGET hyprland)
  pkg_check_modules(LUA REQUIRED IMPORTED_TARGET lua)
+ pkg_check_modules(EIS REQUIRED IMPORTED_TARGET libeis-1.0)
  # Resolve <src/...> only through the selected pkg-config header tree. Old
  # <hyprland/src/...> includes can silently fall back to system headers.
  find_path(HYPR_HEADER_ROOT NAMES src/plugins/PluginAPI.hpp
            PATHS ${HYPR_INCLUDE_DIRS} NO_DEFAULT_PATH REQUIRED)
  add_library(UltraEdge SHARED src/main.cpp)
  target_include_directories(UltraEdge PRIVATE ${HYPR_HEADER_ROOT})
- target_link_libraries(UltraEdge PRIVATE PkgConfig::HYPR PkgConfig::LUA)
+ target_link_libraries(UltraEdge PRIVATE PkgConfig::HYPR PkgConfig::LUA PkgConfig::EIS ${CMAKE_DL_LIBS})
  target_compile_options(UltraEdge PRIVATE -Wall -Wextra -Wno-unused-parameter -fno-gnu-unique)
  target_compile_definitions(UltraEdge PRIVATE WLR_USE_UNSTABLE)
  install(TARGETS UltraEdge LIBRARY DESTINATION lib)
@@ -23,6 +24,12 @@ if(BUILD_TESTING)
  add_executable(edge-tests tests/engine.cpp)
  target_include_directories(edge-tests PRIVATE src)
  add_test(NAME edge-state-machine COMMAND edge-tests)
+ find_package(Python3 REQUIRED COMPONENTS Interpreter)
+ find_package(PkgConfig REQUIRED)
+ pkg_check_modules(TEST_LUA REQUIRED lua)
+ add_test(NAME plugin-lua-input-regression
+   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/plugin_regression.py
+     --build-dir ${CMAKE_CURRENT_BINARY_DIR}/plugin-regression --cxx ${CMAKE_CXX_COMPILER})
  find_program(LUA_PROGRAM lua)
  if(LUA_PROGRAM)
   add_test(NAME offline-gesture-config COMMAND ${LUA_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/tests/gesture-config.lua ${CMAKE_CURRENT_SOURCE_DIR}/examples/gestures.lua)

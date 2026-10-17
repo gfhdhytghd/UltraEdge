@@ -283,5 +283,39 @@ int main() {
   sample(s, r, {0, 400}, {-1, 0}, 370);
   sample(s, r, {0, 400}, {}, 430, false);
   check(!s.moving, "stationary timer expires movement burst");
+  for (auto mode : {Mode::Move, Mode::Push}) {
+    for (auto target : {"left", "right", "top", "bottom", "top-left",
+                        "top-right", "bottom-left", "bottom-right"}) {
+      r = {};
+      r.mode = mode;
+      r.target = target;
+      auto d = direction(target);
+      check(towards(r, {20 * d.x, 20 * d.y}), "normal accepted");
+      check(!towards(r, {-20 * d.x, -20 * d.y}), "reverse rejected");
+      if (d.x && d.y) {
+        r.pushAngle = 30;
+        check(!towards(r, {20 * d.x, 2 * d.y}), "corner cone narrowed");
+      } else {
+        Point boundary{20 * d.x - 20 * d.y, 20 * d.y + 20 * d.x};
+        check(towards(r, boundary), "default 90 degree boundary included");
+        Point sideways{10 * d.x - 20 * d.y, 10 * d.y + 20 * d.x};
+        check(!towards(r, sideways), "outside default cone rejected");
+        r.pushAngle = 180;
+        check(towards(r, sideways), "wider cone configurable");
+        r.pushAngle = 60;
+        check(!towards(r, boundary), "narrow cone configurable");
+      }
+    }
+    r = {};
+    r.mode = mode;
+    r.pushAngle = 60;
+    s.reset();
+    sample(s, r, {0, 400}, {}, 0, false);
+    sample(s, r, {0, 400}, {}, 200, false);
+    sample(s, r, {0, 400}, {-4, 0}, 210);
+    check(sample(s, r, {0, 400}, {-10, 10}, 220) == Action::None &&
+              !s.moving && !s.armed,
+          "outside configured cone interrupts both modes");
+  }
   std::cout << checks << " state-machine checks passed\n";
 }

@@ -1,9 +1,8 @@
 #include "engine.hpp"
 #include <aquamarine/input/Input.hpp>
 #include <chrono>
-#include <src/config/ConfigManager.hpp>
+#include <dlfcn.h>
 #include <src/config/ConfigValue.hpp>
-#include <src/config/values/types/StringValue.hpp>
 #include <src/event/EventBus.hpp>
 #include <src/managers/SessionLockManager.hpp>
 #include <src/managers/eventLoop/EventLoopManager.hpp>
@@ -13,6 +12,8 @@
 #include <src/plugins/PluginAPI.hpp>
 #include <src/pointer/PointerManager.hpp>
 #include <src/state/MonitorState.hpp>
+#include <src/plugins/PluginSystem.hpp>
+#include <src/protocols/InputCapture.hpp>
 #include <libinput.h>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -42,6 +43,31 @@ static double now() {
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
+static bool inputCaptured();
+
+namespace {
+// Nested processing belongs to the same synchronous input/timer invocation.
+// Cache the capture snapshot only for that invocation, never a plugin export
+// or handle across event-loop turns or plugin unload/reload.
+struct CaptureScope {
+  inline static unsigned depth = 0;
+  inline static bool captured = false;
+  CaptureScope() {
+    if (depth == 0)
+      captured = inputCaptured();
+    ++depth;
+  }
+  ~CaptureScope() {
+    if (--depth == 0)
+      captured = false;
+  }
+  CaptureScope(const CaptureScope &) = delete;
+  CaptureScope &operator=(const CaptureScope &) = delete;
+};
+} // namespace
+
+static bool localInputAllowed();
+
 struct Binding {
   edge::Rule rule;
   edge::Machine state;
@@ -83,6 +109,9 @@ static edge::Rule parse(const Json &j) {
   r.band = j.value("band", 2.);
   r.pause = j.value("pause_ms", 180.);
   r.push = j.value("push", 8.);
+  r.pushAngle = j.value("push_angle", 90.);
+  if (!std::isfinite(r.pushAngle) || r.pushAngle <= 0 || r.pushAngle > 180)
+    throw std::runtime_error("push_angle must be finite and in (0, 180]");
   r.noise = j.value("noise", .5);
   r.exit = j.value("exit_distance", 80.);
   r.cooldown = j.value("cooldown_ms", 400.);
@@ -127,18 +156,25 @@ static std::optional<edge::Rect> rect(const Json &j) {
   return b;
 }
 static std::optional<edge::Rect> region(Binding &b) {
+  CaptureScope capture;
+  if (!localInputAllowed())
+    return {};
   try {
     if (b.L && b.region != LUA_NOREF) {
-      int top = lua_gettop(b.L);
+      struct StackGuard {
+        lua_State *L;
+        int top;
+        ~StackGuard() { lua_settop(L, top); }
+      } guard{b.L, lua_gettop(b.L)};
       if (!luaCall(b, b.region, 1, b.state.monitor))
         return {};
       Json j = nullptr;
       if (lua_istable(b.L, -1)) {
         j = Json::object();
         for (auto key : {"x", "y", "width", "height"}) {
-          lua_getfield(b.L, -1, key);
+          lua_pushstring(b.L, key);
+          lua_rawget(b.L, -2);
           if (!lua_isnumber(b.L, -1)) {
-            lua_settop(b.L, top);
             throw std::runtime_error(
                 "hold callback must return numeric rectangle or nil");
           }
@@ -146,10 +182,8 @@ static std::optional<edge::Rect> region(Binding &b) {
           lua_pop(b.L, 1);
         }
       } else if (!lua_isnil(b.L, -1)) {
-        lua_settop(b.L, top);
         throw std::runtime_error("hold callback must return rectangle or nil");
       }
-      lua_settop(b.L, top);
       return rect(j);
     }
   } catch (const std::exception &e) {
@@ -158,8 +192,10 @@ static std::optional<edge::Rect> region(Binding &b) {
   return {};
 }
 static bool action(Binding &b, edge::Action a) {
-  // Hyprland development HEAD supports only Lua config; native actions are
-  // supplied by the same hl.dsp callbacks as other Lua rules.
+  CaptureScope capture;
+  if (!localInputAllowed())
+    return false;
+  // Hyprland development HEAD supplies actions through Lua callbacks.
   int ref = a == edge::Action::Enter ? b.on : b.off;
   if (ref == LUA_NOREF)
     return true;
@@ -170,7 +206,7 @@ static bool action(Binding &b, edge::Action a) {
   return ok;
 }
 static void processImpl(edge::Point delta, bool motion) {
-  if (processing)
+  if (!localInputAllowed() || processing)
     return;
   processing = true;
   struct Guard {
@@ -185,13 +221,20 @@ static void processImpl(edge::Point delta, bool motion) {
   auto p = Pointer::mgr()->position();
   double t = now();
   for (auto &b : copy) {
+    if (!localInputAllowed())
+      return;
     bool dynamic = b->region != LUA_NOREF;
     auto hold =
         b->state.active && dynamic ? region(*b) : std::optional<edge::Rect>{};
+    if (!localInputAllowed())
+      return;
     auto a = b->state.step(b->rule, monitors, {p.x, p.y}, delta, t, motion,
                            hold, dynamic,
                            paused || g_pSessionLockManager->isSessionLocked());
-    if (a != edge::Action::None && !action(*b, a)) {
+    const bool ok = a == edge::Action::None || action(*b, a);
+    if (!localInputAllowed())
+      return;
+    if (!ok) {
       b->state.reset();
       b->state.until = t + b->rule.cooldown;
     }
@@ -199,12 +242,18 @@ static void processImpl(edge::Point delta, bool motion) {
 }
 static void process(edge::Point delta = {}, bool motion = false) {
   try {
+    CaptureScope capture;
     processImpl(delta, motion);
   } catch (const std::exception &e) {
     failure(e.what());
   }
 }
 static void mouse(CInputManager *self, IPointer::SMotionEvent e) {
+  CaptureScope capture;
+  if (!localInputAllowed()) {
+    reinterpret_cast<MouseFn>(hook->m_original)(self, e);
+    return;
+  }
   // Preserve compositor semantics including acceleration choice and touchpad
   // flips.
   static auto noAccel = CConfigValue<Config::INTEGER>("input:force_no_accel");
@@ -230,8 +279,13 @@ struct SwipeSession {
     captured = false;
   }
   void begin(int fingers) {
+    CaptureScope capture;
     clear();
+    if (!localInputAllowed())
+      return;
     process();
+    if (!localInputAllowed())
+      return;
     double t = now();
     for (auto &b : rules) {
       edge::Swipe swipe;
@@ -242,12 +296,22 @@ struct SwipeSession {
     }
   }
   void update(edge::Point d) {
+    CaptureScope capture;
+    if (!localInputAllowed())
+      return;
     process();
+    if (!localInputAllowed())
+      return;
     for (auto &e : entries)
       e.swipe.update(e.binding->rule, d);
   }
   void end(bool cancelled) {
+    CaptureScope capture;
+    if (!localInputAllowed())
+      return;
     process();
+    if (!localInputAllowed())
+      return;
     auto copy = std::move(entries);
     bool wasProcessing = processing;
     processing = true;
@@ -256,16 +320,23 @@ struct SwipeSession {
       ~Guard() { processing = previous; }
     } guard{wasProcessing};
     for (auto &e : copy) {
+      if (!localInputAllowed())
+        return;
       auto &b = *e.binding;
       auto a = e.swipe.end(b.rule, b.state, now(), cancelled);
       if (a != edge::Action::None) {
         try {
-          if (!action(b, a)) {
+          const bool ok = action(b, a);
+          if (!localInputAllowed())
+            return;
+          if (!ok) {
             b.state.reset();
             b.state.until = now() + b.rule.cooldown;
           }
         } catch (const std::exception &ex) {
           failure(ex.what());
+          if (!localInputAllowed())
+            return;
           b.state.reset();
           b.state.until = now() + b.rule.cooldown;
         }
@@ -285,8 +356,46 @@ static void clearGestures() {
   nativeSwipe.entries.clear();
   scrollSwipe.entries.clear();
 }
+static bool inputCaptured() {
+  if (PROTO::inputCapture && PROTO::inputCapture->isCaptured())
+    return true;
+  if (!g_pPluginSystem)
+    return false;
+  for (const auto *plugin : g_pPluginSystem->getAllPlugins()) {
+    if (!plugin || plugin->m_name != "viewflow-hyprland" || !plugin->m_handle)
+      continue;
+    // Resolve from the current handle each time, never retain an export across
+    // plugin unload/reload. Viewflow also has a private capture mode.
+    using Query = bool (*)();
+    const auto query = reinterpret_cast<Query>(
+        dlsym(plugin->m_handle, "viewflow_input_capture_active_v1"));
+    return query && query();
+  }
+  return false;
+}
+static bool localInputAllowed() {
+  CaptureScope capture;
+  // Preserve capture starting inside a Lua/dispatcher/original-hook callback.
+  // This cheap native check does not repeat plugin traversal or dlsym.
+  if (!CaptureScope::captured &&
+      !(PROTO::inputCapture && PROTO::inputCapture->isCaptured()))
+    return true;
+  nativeSwipe.clear();
+  scrollSwipe.clear();
+  scrollOwner.reset();
+  scrollAxes = 0;
+  lastScroll = 0;
+  for (auto &b : rules)
+    b->state.reset();
+  return false;
+}
 static void wheel(CInputManager *self, IPointer::SAxisEvent e,
                   SP<IPointer> pointer) {
+  CaptureScope capture;
+  if (!localInputAllowed()) {
+    reinterpret_cast<WheelFn>(axisHook->m_original)(self, e, pointer);
+    return;
+  }
   bool eligible = false;
   if (pointer && pointer->m_isTouchpad &&
       e.source == WL_POINTER_AXIS_SOURCE_FINGER && pointer->aq())
@@ -318,6 +427,8 @@ static void wheel(CInputManager *self, IPointer::SAxisEvent e,
         scrollSwipe.end(false);
     }
   }
+  if (!localInputAllowed())
+    consumed = false;
   if (!consumed)
     reinterpret_cast<WheelFn>(axisHook->m_original)(self, e, pointer);
 }
@@ -341,7 +452,7 @@ static int addRule(lua_State *L) {
     for (auto key :
          {"band", "pause_ms", "push", "noise", "exit_distance", "cooldown_ms",
           "dwell_ms", "burst_ms", "hold_wait_ms", "swipe_distance",
-          "move_ms", "movement_gap_ms"}) {
+          "move_ms", "movement_gap_ms", "push_angle"}) {
       lua_getfield(L, 1, key);
       if (!lua_isnil(L, -1)) {
         if (!lua_isnumber(L, -1)) {
@@ -381,7 +492,10 @@ static int addRule(lua_State *L) {
     lua_pop(L, 1);
     auto b = std::make_shared<Binding>();
     b->rule = parse(j);
-    b->L = L;
+    // The registry is shared, but the caller may be a collectable coroutine.
+    lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
+    b->L = lua_tothread(L, -1);
+    lua_pop(L, 1);
     for (auto pair :
          {std::pair{"on_enter", &b->on}, std::pair{"on_exit", &b->off},
           std::pair{"hold", &b->region}}) {
@@ -439,16 +553,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
   if (runtimeABI != clientABI)
     throw std::runtime_error("Hyprland header/runtime ABI mismatch: runtime=" +
                              runtimeABI + "; client=" + clientABI);
-  if (!HyprlandAPI::addConfigValueV2(
-          h, makeShared<Config::Values::CStringValue>("plugin:ultraedge:rules",
-                                                      "JSON rule array", "[]")))
-    throw std::runtime_error("config registration failed");
-  if (Config::mgr()->type() == Config::CONFIG_LUA) {
-    if (!HyprlandAPI::addLuaFunction(h, "ultraedge", "rule", addRule) ||
-        !HyprlandAPI::addLuaFunction(h, "ultraedge", "clear", clear) ||
-        !HyprlandAPI::addLuaFunction(h, "ultraedge", "pause", pauseLua))
-      throw std::runtime_error("Lua registration failed");
-  }
+  if (!HyprlandAPI::addLuaFunction(h, "ultraedge", "rule", addRule) ||
+      !HyprlandAPI::addLuaFunction(h, "ultraedge", "clear", clear) ||
+      !HyprlandAPI::addLuaFunction(h, "ultraedge", "pause", pauseLua))
+    throw std::runtime_error("Lua registration failed");
   void *address = nullptr;
   size_t matches = 0;
   for (auto &f : HyprlandAPI::findFunctionsByName(h, "onMouseMoved"))
@@ -478,6 +586,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
     throw std::runtime_error("touchpad axis hook failed");
   listeners.push_back(Event::bus()->m_events.gesture.swipe.begin.listen(
       [](IPointer::SSwipeBeginEvent e, Event::SCallbackInfo &info) {
+        CaptureScope capture;
+        if (!localInputAllowed())
+          return;
         if (info.cancelled) {
           nativeSwipe.clear();
           return;
@@ -488,6 +599,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
       }));
   listeners.push_back(Event::bus()->m_events.gesture.swipe.update.listen(
       [](IPointer::SSwipeUpdateEvent e, Event::SCallbackInfo &info) {
+        CaptureScope capture;
+        if (!localInputAllowed())
+          return;
         if (info.cancelled)
           for (auto &entry : nativeSwipe.entries)
             entry.swipe.invalid = true;
@@ -497,15 +611,19 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
       }));
   listeners.push_back(Event::bus()->m_events.gesture.swipe.end.listen(
       [](IPointer::SSwipeEndEvent e, Event::SCallbackInfo &info) {
+        CaptureScope capture;
+        if (!localInputAllowed())
+          return;
         bool captured = nativeSwipe.captured;
         nativeSwipe.end(e.cancelled || info.cancelled);
-        if (captured)
+        if (captured && localInputAllowed())
           info.cancelled = true;
       }));
   // Animation ticks stop on idle desktops. Dwell/hold must keep working there.
   timer = makeShared<CEventLoopTimer>(
       std::chrono::milliseconds(16),
       [](SP<CEventLoopTimer> self, void *) {
+        CaptureScope capture;
         if (!rules.empty())
           process();
         if (scrollAxes && now() - lastScroll >= 140) {

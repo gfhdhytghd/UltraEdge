@@ -7,8 +7,8 @@ local stage = hl.plugin and hl.plugin.hymission
 if stage and type(stage.stage_open) == "function" and
     type(stage.stage_close) == "function" and type(stage.stage_region) == "function" then
   assert(edge.rule({
-    monitor = "*", target = "left", mode = "push",
-    pause_ms = 180, push = 8, noise = 0.5, band = 2, cooldown_ms = 400,
+    monitor = "*", target = "left", mode = "move",
+    move_ms = 100, movement_gap_ms = 80, noise = 0.5, band = 2, cooldown_ms = 400,
     on_enter = function() stage.stage_open() end,
     on_exit = function() stage.stage_close() end,
     hold = function(monitor) return stage.stage_region(monitor) end,
@@ -35,10 +35,10 @@ local function ai_region(name)
   return nil
 end
 assert(edge.rule({
-  monitor = "*", target = "right", mode = "push",
-  pause_ms = 180, push = 8, noise = 0.5, band = 2, cooldown_ms = 400,
+  monitor = "*", target = "right", mode = "move",
+  move_ms = 100, movement_gap_ms = 80, noise = 0.5, band = 2, cooldown_ms = 400,
   hold_wait_ms = 5000, exit_distance = 80,
-  on_enter = function(monitor) hl.exec_cmd("bash /home/wilf/.config/HyprV/hypr/scripts/sidechat.sh show " .. shell_quote(monitor)) end,
-  on_exit = function() hl.exec_cmd("bash /home/wilf/.config/HyprV/hypr/scripts/sidechat.sh hide") end,
+  on_enter = function(monitor) hl.exec_cmd("bash /home/wilf/.config/HyprV/hypr/scripts/sidechat.sh show " .. shell_quote(monitor) .. " --no-cursor-warp") end,
+  on_exit = function() hl.exec_cmd("bash /home/wilf/.config/HyprV/hypr/scripts/sidechat.sh hide '' --no-cursor-warp") end,
   hold = ai_region,
 }))
