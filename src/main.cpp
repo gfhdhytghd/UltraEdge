@@ -385,7 +385,8 @@ static bool localInputAllowed() {
   if (!CaptureScope::captured &&
       !(PROTO::inputCapture && PROTO::inputCapture->isCaptured()))
     return true;
-  nativeSwipe.clear();
+  // Keep ownership of a native stream whose begin never reached clients.
+  nativeSwipe.entries.clear();
   scrollSwipe.clear();
   scrollOwner.reset();
   scrollAxes = 0;
@@ -604,8 +605,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
   listeners.push_back(Event::bus()->m_events.gesture.swipe.begin.listen(
       [](IPointer::SSwipeBeginEvent e, Event::SCallbackInfo &info) {
         CaptureScope capture;
-        if (!localInputAllowed())
+        if (!localInputAllowed()) {
+          nativeSwipe.clear();
           return;
+        }
         if (info.cancelled) {
           nativeSwipe.clear();
           return;
@@ -617,8 +620,11 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
   listeners.push_back(Event::bus()->m_events.gesture.swipe.update.listen(
       [](IPointer::SSwipeUpdateEvent e, Event::SCallbackInfo &info) {
         CaptureScope capture;
-        if (!localInputAllowed())
+        if (!localInputAllowed()) {
+          if (nativeSwipe.captured)
+            info.cancelled = true;
           return;
+        }
         if (info.cancelled)
           for (auto &entry : nativeSwipe.entries)
             entry.swipe.invalid = true;
@@ -629,11 +635,13 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
   listeners.push_back(Event::bus()->m_events.gesture.swipe.end.listen(
       [](IPointer::SSwipeEndEvent e, Event::SCallbackInfo &info) {
         CaptureScope capture;
-        if (!localInputAllowed())
-          return;
+        const bool allowed = localInputAllowed();
         bool captured = nativeSwipe.captured;
-        nativeSwipe.end(e.cancelled || info.cancelled);
-        if (captured && localInputAllowed())
+        if (allowed)
+          nativeSwipe.end(e.cancelled || info.cancelled);
+        else
+          nativeSwipe.clear();
+        if (captured)
           info.cancelled = true;
       }));
   // Animation ticks stop on idle desktops. Dwell/hold must keep working there.

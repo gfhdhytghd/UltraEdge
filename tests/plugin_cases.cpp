@@ -110,7 +110,7 @@ static void captureCases(lua_State* L) {
   Event::SCallbackInfo begin;swipeBegin({3},begin);assert(begin.cancelled&&nativeSwipe.captured);
   Event::SCallbackInfo update;swipeUpdate({{60,0}},update);assert(update.cancelled);
   capture(true);Event::SCallbackInfo end;swipeEnd({false},end);
-  assert(!end.cancelled&&ticks==0&&!nativeSwipe.captured&&nativeSwipe.entries.empty());
+  assert(end.cancelled&&ticks==0&&!nativeSwipe.captured&&nativeSwipe.entries.empty());
   Event::SCallbackInfo remoteBegin,remoteUpdate,remoteEnd;
   swipeBegin({3},remoteBegin);swipeUpdate({{60,0}},remoteUpdate);swipeEnd({false},remoteEnd);
   assert(!remoteBegin.cancelled&&!remoteUpdate.cancelled&&!remoteEnd.cancelled&&ticks==0);
@@ -175,6 +175,32 @@ static void captureQueryCases(lua_State* L) {
  resetCapture();
  std::cout<<"capture resolution: once per entry across nested rules/process/swipe/timer, no cross-entry cache PASS\n";
 }
+static void captureTailCases(lua_State* L) {
+ for(bool viewflow:{false,true}) for(bool consume:{false,true}) {
+  resetCapture();
+  run(L,consume?"assert(edge.rule{mode='swipe',on_enter=tick,consume=true})":
+                "assert(edge.rule{mode='swipe',on_enter=tick,consume=false})");
+  Event::SCallbackInfo begin;swipeBegin({3},begin);assert(begin.cancelled==consume);
+  if(viewflow)viewflowCaptured=true;else PROTO::capture.active=true;
+  timerTick(std::make_shared<CEventLoopTimer>(),nullptr);
+  assert(nativeSwipe.entries.empty());
+  Event::SCallbackInfo during;swipeUpdate({{60,0}},during);
+  assert(during.cancelled==consume);
+  viewflowCaptured=false;PROTO::capture.active=false;
+  Event::SCallbackInfo after;swipeUpdate({{60,0}},after);
+  assert(after.cancelled==consume);
+  Event::SCallbackInfo end;swipeEnd({false},end);
+  assert(end.cancelled==consume&&ticks==0&&!nativeSwipe.captured);
+  // A new stream that begins during capture belongs to the original handler.
+  Event::SCallbackInfo b2;swipeBegin({3},b2);
+  PROTO::capture.active=true;
+  Event::SCallbackInfo b3,u3,e3;
+  swipeBegin({3},b3);swipeUpdate({{60,0}},u3);swipeEnd({false},e3);
+  assert(!b3.cancelled&&!u3.cancelled&&!e3.cancelled&&ticks==0);
+ }
+ resetCapture();
+ std::cout<<"native swipe tails: retain ownership through native/Viewflow capture, release at end, preserve observed/new streams PASS\n";
+}
 static void lifetimeCases(lua_State* L) {
  resetCapture();
  auto manager=std::static_pointer_cast<Config::Lua::CConfigManager>(Config::mgr());
@@ -212,5 +238,6 @@ int main() {
  providerCases(L);
  captureCases(L);
  captureQueryCases(L);
+ captureTailCases(L);
  lifetimeCases(L);
 }
