@@ -1,6 +1,7 @@
 # UltraEdge
 
-Independent Hyprland development HEAD plugin for exposed edges and corners. Supports basic
+Independent Hyprland plugin for exposed edges and corners, targeting Hyprland v0.57.0
+([gfhdhytghd/Hyprland](https://github.com/gfhdhytghd/Hyprland/releases/tag/v0.57.0) `f6725e43`). Supports basic
 hot edges/corners and a deliberate **arrive → stop → push again** gesture, plus edge-qualified
 two/three/four-finger directional touchpad gestures and configurable continuous
 outward pointer movement (`move_ms`, default 100ms), from mouse or touchpad. No
@@ -69,7 +70,7 @@ end
 
 Lua uses actual function callbacks, including native actions via `hl.dsp` /
 `hl.exec_cmd` and plugin-owned Lua APIs. It does **not** pretend a plugin string
-dispatcher is registered: development HEAD has removed the legacy parser and
+dispatcher is registered: Hyprland 0.57 has removed the legacy parser and
 `addDispatcherV2` always returns false. Legacy JSON dispatcher rules and
 `ultraedge:pause` strings are unavailable on this branch; use Lua callbacks and
 `hl.plugin.ultraedge.pause(boolean)`. The old
@@ -224,7 +225,7 @@ intentional behavior boundary, including pointer warps between outputs.
 ## Stage and this machine
 
 Hymission supplies Lua `stage_open`, `stage_close` and `stage_region` APIs.
-Use `stage_region(name)` as the hold provider on development HEAD; legacy
+Use `stage_region(name)` as the hold provider on Hyprland 0.57; legacy
 `hold_command` region lookup is unavailable here. Open/close are idempotent,
 global Stage actions, not toggles. The rectangle follows actual target reservation width during
 animation, including the Stage desktop gap and output reservation gaps. A
