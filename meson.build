@@ -16,7 +16,7 @@ endif
 shared_library('UltraEdge', 'src/main.cpp',
   include_directories: include_directories(hypr_header_root),
   dependencies: [hypr, dependency('lua'), dependency('libeis-1.0'), meson.get_compiler('cpp').find_library('dl', required: false)],
-  cpp_args: ['-DWLR_USE_UNSTABLE', '-fno-gnu-unique'], install: true,
+  cpp_args: ['-DWLR_USE_UNSTABLE'] + meson.get_compiler('cpp').get_supported_arguments('-fno-gnu-unique'), install: true,
   override_options: ['b_lundef=false'])
 test('edge-state-machine', executable('edge-tests', 'tests/engine.cpp', include_directories: include_directories('src')))
 
