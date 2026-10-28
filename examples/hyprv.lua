@@ -22,12 +22,10 @@ local function ai_region(name)
   for _, win in ipairs(hl.get_windows()) do
     local mon, ws = win.monitor, win.workspace
     if win.class == "ai-hub-firefox" and win.mapped and not win.hidden and
-        ws and ws.name ~= "special:sidechat_hidden" and mon and mon.name == name then
+        ws and ws.active and ws.name ~= "special:sidechat_hidden" and mon and mon.name == name then
       local at = win.at
-      -- monitor.width/height are physical dimensions in Hyprland 0.56.2;
-      -- logical dimensions follow scale + transform.
-      local w, h = mon.width / mon.scale, mon.height / mon.scale
-      if mon.transform % 2 == 1 then w, h = h, w end
+      -- The 0.57 fork's mode is already transformed, scaled and rounded.
+      local w, h = mon.mode.width, mon.mode.height
       local left = math.max(mon.x, at.x)
       return { x = left, y = mon.y, width = mon.x + w - left, height = h }
     end

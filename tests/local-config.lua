@@ -9,14 +9,26 @@ for _, rule in ipairs(registrations) do
   assert(rule.mode=="move" and rule.move_ms==100 and rule.movement_gap_ms==80)
 end
 assert(registrations[1].hold('L').width==120)
-local mon={name='R',x=-100,y=-200,width=2560,height=1440,scale=2,transform=0}
-windows={{class='ai-hub-firefox',mapped=true,hidden=false,workspace={name='1'},monitor=mon,at={x=800,y=-140}}}
+local mon={name='R',x=-100,y=-200,width=2560,height=1440,scale=2,transform=0,mode={width=1280,height=720}}
+windows={{class='ai-hub-firefox',mapped=true,hidden=false,workspace={name='1',active=true},monitor=mon,at={x=800,y=-140}}}
 local r=registrations[2].hold('R');assert(r.x==800 and r.y==-200 and r.width==380 and r.height==720)
 windows[1].at.x=700;assert(registrations[2].hold('R').width==480)
 assert(registrations[2].hold('L')==nil)
+windows[1].workspace.active=false;assert(registrations[2].hold('R')==nil)
+windows[1].workspace.name='special:other';assert(registrations[2].hold('R')==nil)
+windows[1].workspace.active=true;assert(registrations[2].hold('R')~=nil)
 windows[1].workspace.name='special:sidechat_hidden';assert(registrations[2].hold('R')==nil)
-windows[1].workspace.name='1';mon.transform=1;windows[1].at.x=300
+windows[1].workspace.name='1';mon.transform=1;mon.mode={width=720,height=1280};windows[1].at.x=300
 r=registrations[2].hold('R');assert(r.width==320 and r.height==1280)
+for _, case in ipairs({{2560,1440,1.5,0,1707,960},{1920,1080,1.7,0,1129,635},{2560,1440,1.5,1,960,1707}}) do
+  mon.width,mon.height,mon.scale,mon.transform=case[1],case[2],case[3],case[4]
+  mon.mode={width=case[5],height=case[6]}
+  windows[1].at.x=mon.x+mon.mode.width-100
+  r=registrations[2].hold('R')
+  assert(r.x+r.width==mon.x+mon.mode.width and r.height==mon.mode.height)
+  local pointer_x=mon.x+mon.mode.width-0.05
+  assert(pointer_x>=r.x and pointer_x<r.x+r.width)
+end
 registrations[2].on_enter("DP-1'$bad")
 assert(commands[1]=="bash /home/wilf/.config/HyprV/hypr/scripts/sidechat.sh show 'DP-1'\\''$bad' --no-cursor-warp")
 registrations[2].on_exit()
