@@ -3,6 +3,7 @@
 #include <chrono>
 #include <dlfcn.h>
 #include <src/config/ConfigValue.hpp>
+#include <src/config/lua/ConfigManager.hpp>
 #include <src/event/EventBus.hpp>
 #include <src/managers/SessionLockManager.hpp>
 #include <src/managers/eventLoop/EventLoopManager.hpp>
@@ -72,9 +73,11 @@ struct Binding {
   edge::Rule rule;
   edge::Machine state;
   lua_State *L = nullptr;
+  SP<Config::Lua::SLuaStateLifetime> lifetime;
   int on = LUA_NOREF, off = LUA_NOREF, region = LUA_NOREF;
+  bool live() const { return lifetime && lifetime->state == L; }
   ~Binding() {
-    if (L)
+    if (live())
       for (int ref : {on, off, region})
         if (ref != LUA_NOREF)
           luaL_unref(L, LUA_REGISTRYINDEX, ref);
@@ -135,6 +138,8 @@ static edge::Rule parse(const Json &j) {
 static void failure(const std::string &s) { error = s; }
 static bool luaCall(Binding &b, int ref, int results,
                     const std::string &monitor) {
+  if (!b.live())
+    return false;
   lua_rawgeti(b.L, LUA_REGISTRYINDEX, ref);
   lua_pushlstring(b.L, monitor.data(), monitor.size());
   if (lua_pcall(b.L, 1, results, 0) != LUA_OK) {
@@ -160,7 +165,7 @@ static std::optional<edge::Rect> region(Binding &b) {
   if (!localInputAllowed())
     return {};
   try {
-    if (b.L && b.region != LUA_NOREF) {
+    if (b.live() && b.region != LUA_NOREF) {
       struct StackGuard {
         lua_State *L;
         int top;
@@ -496,6 +501,10 @@ static int addRule(lua_State *L) {
     lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
     b->L = lua_tothread(L, -1);
     lua_pop(L, 1);
+    auto *manager = Config::Lua::CConfigManager::fromLuaState(L);
+    if (!manager)
+      throw std::runtime_error("Lua config manager unavailable");
+    b->lifetime = manager->luaStateLifetime();
     for (auto pair :
          {std::pair{"on_enter", &b->on}, std::pair{"on_exit", &b->off},
           std::pair{"hold", &b->region}}) {
@@ -533,6 +542,17 @@ static int pauseLua(lua_State *L) {
     b->state.reset();
   return 0;
 }
+static WP<Config::IConfigManager> registeredLuaManager;
+static void registerLuaFunctions() {
+  if (registeredLuaManager.get() == Config::mgr().get())
+    return;
+  if (!HyprlandAPI::addLuaFunction(handle, "ultraedge", "rule", addRule) ||
+      !HyprlandAPI::addLuaFunction(handle, "ultraedge", "clear", clear) ||
+      !HyprlandAPI::addLuaFunction(handle, "ultraedge", "pause", pauseLua))
+    throw std::runtime_error("Lua registration failed");
+  // A weak identity also detects allocator reuse after reload full-reset.
+  registeredLuaManager = WP<Config::IConfigManager>(Config::mgr());
+}
 static SP<IPC::Socket1::SCommand> status;
 APICALL EXPORT std::string PLUGIN_API_VERSION() { return HYPRLAND_API_VERSION; }
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
@@ -553,10 +573,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
   if (runtimeABI != clientABI)
     throw std::runtime_error("Hyprland header/runtime ABI mismatch: runtime=" +
                              runtimeABI + "; client=" + clientABI);
-  if (!HyprlandAPI::addLuaFunction(h, "ultraedge", "rule", addRule) ||
-      !HyprlandAPI::addLuaFunction(h, "ultraedge", "clear", clear) ||
-      !HyprlandAPI::addLuaFunction(h, "ultraedge", "pause", pauseLua))
-    throw std::runtime_error("Lua registration failed");
+  registerLuaFunctions();
   void *address = nullptr;
   size_t matches = 0;
   for (auto &f : HyprlandAPI::findFunctionsByName(h, "onMouseMoved"))
@@ -646,6 +663,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
     rules.clear();
     paused = false;
     error.clear();
+    registerLuaFunctions();
   }));
   listeners.push_back(Event::bus()->m_events.monitor.layoutChanged.listen([] {
     clearGestures();
@@ -682,6 +700,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
 }
 APICALL EXPORT void PLUGIN_EXIT() {
   listeners.clear();
+  registeredLuaManager.reset();
   clearGestures();
   if (axisHook) {
     axisHook->unhook();

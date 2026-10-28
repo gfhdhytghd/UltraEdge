@@ -26,6 +26,9 @@ for name in ("Begin", "Update", "End"):
     start = source.index("[](IPointer::SSwipe" + name + "Event e,")
     end = source.index("}));", start) + 1
     listeners += "\nstatic auto swipe" + name + " = " + source[start:end] + ";\n"
+start = source.index("config.preReload.listen([] {") + len("config.preReload.listen(")
+end = source.index("}));", start) + 1
+listeners += "\nstatic auto preReload = " + source[start:end] + ";\n"
 code = ((fixtures / "plugin_host.hpp").read_text() + aliases + declarations + bodies +
         inputs + config + timer + listeners +
         (fixtures / "plugin_cases.cpp").read_text())

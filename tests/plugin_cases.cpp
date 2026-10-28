@@ -175,8 +175,35 @@ static void captureQueryCases(lua_State* L) {
  resetCapture();
  std::cout<<"capture resolution: once per entry across nested rules/process/swipe/timer, no cross-entry cache PASS\n";
 }
+static void lifetimeCases(lua_State* L) {
+ resetCapture();
+ auto manager=std::static_pointer_cast<Config::Lua::CConfigManager>(Config::mgr());
+ registerLuaFunctions();assert(registrations==3&&manager->functions.size()==3);
+ preReload();assert(registrations==3); // Normal reload must not register twice.
+ run(L,"assert(edge.rule{mode='enter',on_enter=tick,on_exit=tick,hold=hold})");
+ auto orphan=rules[0];
+ // The fork invalidates this token before closing the state.
+ manager->lifetime->state=nullptr;
+ ticks=holds=0;
+ assert(!action(*orphan,edge::Action::Enter));
+ assert(!region(*orphan));assert(ticks==0&&holds==0);
+ lua_close(L);closedState=L;
+ auto* fresh=luaL_newstate();assert(fresh);luaL_openlibs(fresh);
+ auto replacement=installManager(fresh);
+ preReload();orphan.reset();
+ assert(closedUnrefs==0&&rules.empty());
+ assert(registrations==6&&replacement->functions.size()==3);
+ assert(replacement->functions.at("ultraedge.rule")==addRule);
+ assert(replacement->functions.at("ultraedge.clear")==clear);
+ assert(replacement->functions.at("ultraedge.pause")==pauseLua);
+ preReload();assert(registrations==6);
+ replacement->lifetime->state=nullptr;lua_close(fresh);
+ Config::manager.reset();registeredLuaManager.reset();
+ std::cout<<"full-reset: closed-state callbacks/unrefs blocked, Lua APIs restored, normal reload has no duplicate registrations PASS\n";
+}
 int main() {
  auto* L=luaL_newstate();assert(L);luaL_openlibs(L);
+ installManager(L);
  lua_newtable(L);lua_pushcfunction(L,addRule);lua_setfield(L,-2,"rule");
  lua_setglobal(L,"edge");
  lua_pushcfunction(L,tick);lua_setglobal(L,"tick");
@@ -185,5 +212,5 @@ int main() {
  providerCases(L);
  captureCases(L);
  captureQueryCases(L);
- rules.clear();lua_close(L);
+ lifetimeCases(L);
 }

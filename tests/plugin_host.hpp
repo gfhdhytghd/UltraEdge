@@ -37,8 +37,50 @@ struct LockManager { bool locked=false; bool isSessionLocked() { return locked; 
 static LockManager lockManager;
 static auto* g_pSessionLockManager = &lockManager;
 template<class T> using SP=std::shared_ptr<T>;
-template<class T> using WP=std::weak_ptr<T>;
+template<class T> struct WP:std::weak_ptr<T> {
+ using std::weak_ptr<T>::weak_ptr;
+ T* get() const {return this->lock().get();}
+};
 namespace Config {using INTEGER=long;}
+static void* handle=reinterpret_cast<void*>(1);
+namespace Config {
+struct IConfigManager {virtual ~IConfigManager()=default;};
+static SP<IConfigManager> manager;
+static auto& mgr(){return manager;}
+namespace Lua {
+struct SLuaStateLifetime {lua_State* state=nullptr;};
+struct CConfigManager:IConfigManager {
+ SP<SLuaStateLifetime> lifetime=std::make_shared<SLuaStateLifetime>();
+ std::map<std::string,int(*)(lua_State*)> functions;
+ auto luaStateLifetime(){return lifetime;}
+ static CConfigManager* fromLuaState(lua_State* L) {
+  lua_getfield(L,LUA_REGISTRYINDEX,"hl_lua_manager");
+  auto* m=static_cast<CConfigManager*>(lua_touserdata(L,-1));lua_pop(L,1);return m;
+ }
+};
+}
+}
+static int registrations=0;
+namespace HyprlandAPI {
+static bool addLuaFunction(void*,const std::string& ns,const std::string& name,int(*fn)(lua_State*)) {
+ ++registrations;
+ auto m=std::static_pointer_cast<Config::Lua::CConfigManager>(Config::mgr());
+ return m->functions.emplace(ns+"."+name,fn).second;
+}
+}
+static auto installManager(lua_State* L) {
+ auto m=std::make_shared<Config::Lua::CConfigManager>();m->lifetime->state=L;
+ Config::manager=m;
+ lua_pushlightuserdata(L,m.get());lua_setfield(L,LUA_REGISTRYINDEX,"hl_lua_manager");
+ return m;
+}
+static lua_State* closedState=nullptr;
+static unsigned closedUnrefs=0;
+static void checkedUnref(lua_State* L,int table,int ref) {
+ if(L==closedState){++closedUnrefs;return;}
+ luaL_unref(L,table,ref);
+}
+#define luaL_unref checkedUnref
 template<class T> struct CConfigValue {CConfigValue(const char*){} T operator*()const{return 0;}};
 struct FakeAQ {void* getLibinputHandle(){return this;}};
 struct IPointer {
