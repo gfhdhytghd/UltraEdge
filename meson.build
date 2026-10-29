@@ -1,4 +1,4 @@
-project('UltraEdge', 'cpp', version: '0.1.0', default_options: ['cpp_std=c++23'])
+project('UltraEdge', 'cpp', version: '0.2.0', default_options: ['cpp_std=c++23'])
 hypr = dependency('hyprland', method: 'pkg-config')
 # Match CMake's HYPR_HEADER_ROOT: never fall back to system Hyprland headers.
 fs = import('fs')

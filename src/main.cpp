@@ -704,7 +704,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
             return j.dump();
           }});
   HyprlandAPI::reloadConfig();
-  return {"UltraEdge", "Exposed edge/corner triggers", "wilf", "0.1.0"};
+  return {"UltraEdge", "Exposed edge/corner triggers", "wilf", "0.2.0"};
 }
 APICALL EXPORT void PLUGIN_EXIT() {
   listeners.clear();
