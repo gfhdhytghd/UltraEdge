@@ -1,7 +1,7 @@
 # UltraEdge
 
-Independent Hyprland plugin for exposed edges and corners, targeting Hyprland v0.57.0
-([gfhdhytghd/Hyprland](https://github.com/gfhdhytghd/Hyprland/releases/tag/v0.57.0) `f6725e43`). Supports basic
+Independent Hyprland plugin for exposed edges and corners. `main` targets the latest
+official Hyprland release (v0.57.0); `hyprland-master` targets Hyprland's development `main`. Supports basic
 hot edges/corners and a deliberate **arrive → stop → push again** gesture, plus edge-qualified
 two/three/four-finger directional touchpad gestures and configurable continuous
 outward pointer movement (`move_ms`, default 100ms), from mouse or touchpad. No
