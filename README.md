@@ -303,3 +303,25 @@ assert(hl.plugin.ultraedge.rule({
 停止超过 `movement_gap_ms`、反向、侧向移动或离开边缘会重新计时。
 定时器不会替代移动事件触发。小于 `noise` 的抖动不延长移动时间。
 此模式也适用于触控板光标移动；双／三／四指方向手势仍使用 `swipe`。
+
+## AI-powered maintenance
+
+This repository uses AI-powered automated maintenance, shared with the maintainer's other
+Hyprland plugins and the [Hyprland fork](https://github.com/gfhdhytghd/Hyprland). An agent
+checks new issues, pull requests and comments every two hours (replies and reviews within
+about ten minutes), so your [issues](https://github.com/gfhdhytghd/UltraEdge/issues) and
+[pull requests](https://github.com/gfhdhytghd/UltraEdge/pulls) will usually be handled or
+receive a response within three hours. Human maintainers periodically review the project and
+its changes to ensure code quality.
+
+The agent may reply, review, request changes, fix reproducible bugs, merge contributor pull
+requests, and push to the long-lived branches (`main`, `hyprland-master`) and keep them in
+sync. Before anything is merged or pushed, the change is built and tested in a sandbox
+against the exact Hyprland revision each branch targets, loaded into a private headless
+compositor, and reviewed independently. Larger changes (hooks or ABI, config semantics,
+Hyprland pin bumps, packaging) are opened as a pull request for the maintainer instead.
+Releases, tags and marketplace submissions stay manual.
+
+If you want a human to look at something, say so in the issue or pull request; the agent
+then steps back and briefs the maintainer. The pipeline is documented in
+[hymission/maintenance](https://github.com/gfhdhytghd/hymission/tree/master/maintenance).
