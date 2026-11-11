@@ -568,8 +568,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
                                 abiVersionPrefix(AQUAMARINE_VERSION) + "_hu_" +
                                 abiVersionPrefix(HYPRUTILS_VERSION) + "_hg_" +
                                 abiVersionPrefix(HYPRGRAPHICS_VERSION) +
-                                "_hc_" + abiVersionPrefix(HYPRCURSOR_VERSION) +
-                                "_hlg_" + abiVersionPrefix(HYPRLANG_VERSION);
+                                "_hc_" + abiVersionPrefix(HYPRCURSOR_VERSION);
   const std::string runtimeABI = __hyprland_api_get_hash();
   if (runtimeABI != clientABI)
     throw std::runtime_error("Hyprland header/runtime ABI mismatch: runtime=" +
