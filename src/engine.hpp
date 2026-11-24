@@ -89,7 +89,8 @@ inline bool exposed(const Rule &r, const Monitor &m, Point p,
                      d.y < 0   ? a.y - .01
                      : d.y > 0 ? a.y + a.h + .01
                                : p.y};
-    if (b.contains(outside))
+    if ((d.x && b.contains({outside.x, p.y})) ||
+        (d.y && b.contains({p.x, outside.y})) || b.contains(outside))
       return false;
   }
   return true;
@@ -111,7 +112,7 @@ struct Machine {
   uint64_t generation = 0;
   bool candidate = false, armed = false, active = false;
   double lastMotion = 0, entered = 0, lastPush = 0, until = 0, activated = 0;
-  bool sawHold = false, moving = false;
+  bool sawHold = false, moving = false, waitForReentry = false;
   double movementStart = 0, movementLast = 0;
   Point sum{};
   std::string monitor;
@@ -130,7 +131,7 @@ struct Machine {
     sum = {};
     monitor.clear();
     until = 0;
-    sawHold = false;
+    sawHold = waitForReentry = false;
   }
   Action step(const Rule &r, const std::vector<Monitor> &all, Point p,
               Point delta, double now, bool motion,
@@ -170,11 +171,14 @@ struct Machine {
         candidate = armed = false;
         sum = {};
         until = now + r.cooldown;
+        waitForReentry = hot && (r.mode == Mode::Enter || r.mode == Mode::Dwell);
         return Action::Exit;
       }
       return Action::None;
     }
-    if (!hot || now < until) {
+    if (!hot)
+      waitForReentry = false;
+    if (!hot || waitForReentry || now < until) {
       if (candidate)
         ++generation;
       candidate = armed = moving = false;

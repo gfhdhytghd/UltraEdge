@@ -20,6 +20,7 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 extern "C" {
 #include <lauxlib.h>
 #include <lua.h>
@@ -68,6 +69,8 @@ struct CaptureScope {
 } // namespace
 
 static bool localInputAllowed();
+static void clearGestures();
+static void discardDeadRules();
 
 struct Binding {
   edge::Rule rule;
@@ -84,6 +87,19 @@ struct Binding {
   }
 };
 static std::vector<std::shared_ptr<Binding>> rules;
+static uint64_t rulesGeneration = 0;
+static SP<Config::Lua::SLuaStateLifetime> rulesLifetime;
+
+static bool callbacksAllowed() {
+  if (!localInputAllowed())
+    return false;
+  if (!g_pSessionLockManager->isSessionLocked())
+    return true;
+  clearGestures();
+  for (auto &b : rules)
+    b->state.reset();
+  return false;
+}
 static edge::Rule parse(const Json &j) {
   edge::Rule r;
   r.monitor = j.value("monitor", "*");
@@ -101,14 +117,15 @@ static edge::Rule parse(const Json &j) {
     throw std::runtime_error("unknown mode");
   if (j.contains("fingers") && !j["fingers"].is_number_integer())
     throw std::runtime_error("fingers must be integer");
-  r.fingers = j.value("fingers", 3);
+  const auto fingers = j.value("fingers", lua_Integer{3});
   r.swipeDirection = j.value("direction", "right");
   r.swipeDistance = j.value("swipe_distance", 40.);
   r.consume = j.value("consume", true);
-  if (r.fingers < 2 || r.fingers > 4 ||
+  if (fingers < 2 || fingers > 4 ||
       !edge::validSwipeDirection(r.swipeDirection) ||
       !std::isfinite(r.swipeDistance) || r.swipeDistance <= 0)
     throw std::runtime_error("invalid swipe fingers/direction/distance");
+  r.fingers = static_cast<int>(fingers);
   r.band = j.value("band", 2.);
   r.pause = j.value("pause_ms", 180.);
   r.push = j.value("push", 8.);
@@ -162,7 +179,7 @@ static std::optional<edge::Rect> rect(const Json &j) {
 }
 static std::optional<edge::Rect> region(Binding &b) {
   CaptureScope capture;
-  if (!localInputAllowed())
+  if (!callbacksAllowed())
     return {};
   try {
     if (b.live() && b.region != LUA_NOREF) {
@@ -198,7 +215,7 @@ static std::optional<edge::Rect> region(Binding &b) {
 }
 static bool action(Binding &b, edge::Action a) {
   CaptureScope capture;
-  if (!localInputAllowed())
+  if (!callbacksAllowed())
     return false;
   // Hyprland development HEAD supplies actions through Lua callbacks.
   int ref = a == edge::Action::Enter ? b.on : b.off;
@@ -211,12 +228,13 @@ static bool action(Binding &b, edge::Action a) {
   return ok;
 }
 static void processImpl(edge::Point delta, bool motion) {
-  if (!localInputAllowed() || processing)
+  if (!callbacksAllowed() || processing)
     return;
   processing = true;
   struct Guard {
     ~Guard() { processing = false; }
   } guard;
+  const auto generation = rulesGeneration;
   auto copy = rules;
   std::vector<edge::Monitor> monitors;
   for (auto &m : State::monitorState()->monitors())
@@ -226,18 +244,17 @@ static void processImpl(edge::Point delta, bool motion) {
   auto p = Pointer::mgr()->position();
   double t = now();
   for (auto &b : copy) {
-    if (!localInputAllowed())
+    if (!callbacksAllowed() || generation != rulesGeneration)
       return;
     bool dynamic = b->region != LUA_NOREF;
     auto hold =
         b->state.active && dynamic ? region(*b) : std::optional<edge::Rect>{};
-    if (!localInputAllowed())
+    if (!callbacksAllowed() || generation != rulesGeneration)
       return;
     auto a = b->state.step(b->rule, monitors, {p.x, p.y}, delta, t, motion,
-                           hold, dynamic,
-                           paused || g_pSessionLockManager->isSessionLocked());
+                           hold, dynamic, paused);
     const bool ok = a == edge::Action::None || action(*b, a);
-    if (!localInputAllowed())
+    if (!callbacksAllowed() || generation != rulesGeneration)
       return;
     if (!ok) {
       b->state.reset();
@@ -317,7 +334,9 @@ struct SwipeSession {
     process();
     if (!localInputAllowed())
       return;
-    auto copy = std::move(entries);
+    const auto generation = rulesGeneration;
+    auto copy = std::exchange(entries, {});
+    captured = false;
     bool wasProcessing = processing;
     processing = true;
     struct Guard {
@@ -325,14 +344,14 @@ struct SwipeSession {
       ~Guard() { processing = previous; }
     } guard{wasProcessing};
     for (auto &e : copy) {
-      if (!localInputAllowed())
+      if (!callbacksAllowed() || generation != rulesGeneration)
         return;
       auto &b = *e.binding;
       auto a = e.swipe.end(b.rule, b.state, now(), cancelled);
       if (a != edge::Action::None) {
         try {
           const bool ok = action(b, a);
-          if (!localInputAllowed())
+          if (!callbacksAllowed() || generation != rulesGeneration)
             return;
           if (!ok) {
             b.state.reset();
@@ -340,18 +359,18 @@ struct SwipeSession {
           }
         } catch (const std::exception &ex) {
           failure(ex.what());
-          if (!localInputAllowed())
+          if (!callbacksAllowed() || generation != rulesGeneration)
             return;
           b.state.reset();
           b.state.until = now() + b.rule.cooldown;
         }
       }
     }
-    captured = false;
   }
 };
 static SwipeSession nativeSwipe, scrollSwipe;
 static WP<IPointer> scrollOwner;
+static CHyprSignalListener scrollDestroy;
 static unsigned scrollAxes = 0;
 static double lastScroll = 0;
 static void clearGestures() {
@@ -360,6 +379,27 @@ static void clearGestures() {
   // changes.
   nativeSwipe.entries.clear();
   scrollSwipe.entries.clear();
+}
+static void clearScroll() {
+  scrollDestroy.reset();
+  scrollSwipe.clear();
+  scrollOwner.reset();
+  scrollAxes = 0;
+  lastScroll = 0;
+}
+static void clearRules() {
+  ++rulesGeneration;
+  clearGestures();
+  rules.clear();
+}
+static void discardDeadRules() {
+  // A failed syntax check leaves the current Lua state and its rules live.
+  if (!rulesLifetime || rulesLifetime->state)
+    return;
+  clearRules();
+  rulesLifetime.reset();
+  paused = false;
+  error.clear();
 }
 static bool inputCaptured() {
   if (PROTO::inputCapture && PROTO::inputCapture->isCaptured())
@@ -380,6 +420,7 @@ static bool inputCaptured() {
 }
 static bool localInputAllowed() {
   CaptureScope capture;
+  discardDeadRules();
   // Preserve capture starting inside a Lua/dispatcher/original-hook callback.
   // This cheap native check does not repeat plugin traversal or dlsym.
   if (!CaptureScope::captured &&
@@ -387,10 +428,7 @@ static bool localInputAllowed() {
     return true;
   // Keep ownership of a native stream whose begin never reached clients.
   nativeSwipe.entries.clear();
-  scrollSwipe.clear();
-  scrollOwner.reset();
-  scrollAxes = 0;
-  lastScroll = 0;
+  clearScroll();
   for (auto &b : rules)
     b->state.reset();
   return false;
@@ -412,9 +450,9 @@ static void wheel(CInputManager *self, IPointer::SAxisEvent e,
   if (eligible) {
     if (scrollOwner.lock() != pointer) {
       scrollSwipe.end(true);
+      clearScroll();
       scrollOwner = pointer;
-      scrollAxes = 0;
-      scrollSwipe.clear();
+      scrollDestroy = pointer->m_events.destroy.listen([] { clearScroll(); });
     }
     if (!scrollAxes && e.delta != 0)
       scrollSwipe.begin(2);
@@ -443,6 +481,11 @@ static_assert(std::is_same_v<decltype(&wheel), WheelFn>);
 static int addRule(lua_State *L) {
   luaL_checktype(L, 1, LUA_TTABLE);
   try {
+    discardDeadRules();
+    auto *manager = Config::Lua::CConfigManager::fromLuaState(L);
+    if (!manager)
+      throw std::runtime_error("Lua config manager unavailable");
+    rulesLifetime = manager->luaStateLifetime();
     Json j = Json::object();
     for (auto key : {"target", "monitor", "mode", "direction"}) {
       lua_getfield(L, 1, key);
@@ -502,10 +545,7 @@ static int addRule(lua_State *L) {
     lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
     b->L = lua_tothread(L, -1);
     lua_pop(L, 1);
-    auto *manager = Config::Lua::CConfigManager::fromLuaState(L);
-    if (!manager)
-      throw std::runtime_error("Lua config manager unavailable");
-    b->lifetime = manager->luaStateLifetime();
+    b->lifetime = rulesLifetime;
     for (auto pair :
          {std::pair{"on_enter", &b->on}, std::pair{"on_exit", &b->off},
           std::pair{"hold", &b->region}}) {
@@ -532,11 +572,14 @@ static int addRule(lua_State *L) {
   return 2;
 }
 static int clear(lua_State *) {
-  clearGestures();
-  rules.clear();
+  discardDeadRules();
+  clearRules();
   return 0;
 }
 static int pauseLua(lua_State *L) {
+  discardDeadRules();
+  if (auto *manager = Config::Lua::CConfigManager::fromLuaState(L))
+    rulesLifetime = manager->luaStateLifetime();
   paused = lua_toboolean(L, 1);
   clearGestures();
   for (auto &b : rules)
@@ -652,27 +695,26 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
         if (!rules.empty())
           process();
         if (scrollAxes && now() - lastScroll >= 140) {
-          scrollSwipe.end(false);
-          scrollAxes = 0;
-          scrollOwner.reset();
+          const auto owner = scrollOwner.lock();
+          if (owner && owner->aq())
+            scrollSwipe.end(false);
+          clearScroll();
         }
         self->updateTimeout(std::chrono::milliseconds(16));
       },
       nullptr);
   g_pEventLoopManager->addTimer(timer);
   listeners.push_back(Event::bus()->m_events.exit.listen([] {
-    clearGestures();
-    rules.clear();
+    clearRules();
+    clearScroll();
     if (timer)
       timer->cancel();
   }));
   listeners.push_back(Event::bus()->m_events.config.preReload.listen([] {
-    clearGestures();
-    rules.clear();
-    paused = false;
-    error.clear();
+    discardDeadRules();
     registerLuaFunctions();
   }));
+  listeners.push_back(Event::bus()->m_events.config.reloaded.listen(discardDeadRules));
   listeners.push_back(Event::bus()->m_events.monitor.layoutChanged.listen([] {
     clearGestures();
     for (auto &b : rules)
@@ -709,7 +751,9 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE h) {
 APICALL EXPORT void PLUGIN_EXIT() {
   listeners.clear();
   registeredLuaManager.reset();
-  clearGestures();
+  clearRules();
+  clearScroll();
+  rulesLifetime.reset();
   if (axisHook) {
     axisHook->unhook();
     axisHook = nullptr;
@@ -720,7 +764,6 @@ APICALL EXPORT void PLUGIN_EXIT() {
       g_pEventLoopManager->removeTimer(timer);
     timer.reset();
   }
-  rules.clear();
   if (hook) {
     hook->unhook();
     hook = nullptr;
