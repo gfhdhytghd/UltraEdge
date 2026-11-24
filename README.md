@@ -1,7 +1,7 @@
 # UltraEdge
 
 Independent Hyprland plugin for exposed edges and corners. `main` targets the latest
-official Hyprland release (v0.57.0); `hyprland-master` targets Hyprland's development `main`. Supports basic
+official Hyprland release (v0.57.2); `hyprland-master` targets Hyprland's development `main`. Supports basic
 hot edges/corners and a deliberate **arrive → stop → push again** gesture, plus edge-qualified
 two/three/four-finger directional touchpad gestures and configurable continuous
 outward pointer movement (`move_ms`, default 100ms), from mouse or touchpad. No
@@ -41,6 +41,22 @@ one native function at load. This repository has no
 remote requirement. Add/install/update only from a safe user-controlled session;
 plugin updates and loads change the running compositor. The authoring workflow
 here does not install, load/unload, update, inject input, push or publish.
+
+## hyprpm
+
+Use the release tag on Hyprland v0.57.2:
+
+```sh
+hyprpm add https://github.com/gfhdhytghd/UltraEdge v0.2.1-v0.57.2
+hyprpm enable UltraEdge
+```
+
+On Hyprland's development `main`, select the plugin's development branch:
+
+```sh
+hyprpm add https://github.com/gfhdhytghd/UltraEdge origin/hyprland-master
+hyprpm enable UltraEdge
+```
 
 ## Rules
 
