@@ -92,6 +92,19 @@ int main() {
   sample(s, r, {0, 200}, {}, 10);
   check(s.step(r, single, {0, 200}, {}, 11, false, {}, true) == Action::Exit,
         "missing provider closes latch");
+  check(s.step(r, single, {0, 200}, {}, 500, false, {}, true) ==
+            Action::None,
+        "missing provider does not retrigger under stationary pointer");
+  sample(s, r, {10, 200}, {}, 501);
+  check(sample(s, r, {0, 200}, {}, 502) == Action::Enter,
+        "leaving and reentering the band rearms the rule");
+  Rule corner;
+  corner.mode = Mode::Enter;
+  corner.target = "top-right";
+  const std::vector<Monitor> overlap = {single[0], {"B", {900, 0, 200, 200}}};
+  Machine cornerState;
+  check(cornerState.step(corner, overlap, {999, 1}, {}, 0, false) == Action::None,
+        "overlap on one side hides corner");
   r.mode = Mode::Dwell;
   s.reset();
   check(sample(s, r, {0, 200}, {}, 0) == Action::None, "dwell begins");

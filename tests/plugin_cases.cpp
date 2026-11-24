@@ -68,7 +68,7 @@ static int captureProvider(lua_State* L) {PROTO::capture.active=true;return hold
 static int captureAction(lua_State*) {PROTO::capture.active=true;return 0;}
 static void resetCapture() {
  PROTO::capture.active=false;viewflowCaptured=false;viewflowExport=true;plugins.loaded=true;
- nativeSwipe.clear();scrollSwipe.clear();scrollOwner.reset();scrollAxes=0;lastScroll=0;
+ nativeSwipe.clear();clearScroll();
  rules.clear();paused=false;fakeTime=1000;ticks=holds=originalMotions=originalAxes=0;
  motionHook.m_original=reinterpret_cast<void*>(stockMouse);
  wheelHook.m_original=reinterpret_cast<void*>(stockAxis);
@@ -201,12 +201,60 @@ static void captureTailCases(lua_State* L) {
  resetCapture();
  std::cout<<"native swipe tails: retain ownership through native/Viewflow capture, release at end, preserve observed/new streams PASS\n";
 }
+static void staleCallbackCases(lua_State* L) {
+ resetCapture();
+ lua_getglobal(L,"edge");lua_pushcfunction(L,clear);lua_setfield(L,-2,"clear");lua_pop(L,1);
+ run(L,"assert(edge.rule{mode='enter',on_enter=edge.clear});assert(edge.rule{mode='enter',on_enter=tick})");
+ process();assert(rules.empty()&&ticks==0);
+
+ run(L,"assert(edge.rule{mode='swipe',on_enter=edge.clear});assert(edge.rule{mode='swipe',on_enter=tick})");
+ Event::SCallbackInfo begin,update,end;
+ swipeBegin({3},begin);swipeUpdate({{60,0}},update);swipeEnd({false},end);
+ assert(begin.cancelled&&update.cancelled&&end.cancelled&&rules.empty()&&ticks==0&&!nativeSwipe.captured);
+
+ run(L,"assert(edge.rule{mode='enter',on_enter=tick,hold=edge.clear,on_exit=tick})");
+ run(L,"assert(edge.rule{mode='enter',on_enter=tick,hold=hold,on_exit=tick})");
+ process();assert(ticks==2);
+ process();assert(rules.empty()&&ticks==2&&holds==0);
+ resetCapture();
+
+ run(L,"assert(edge.rule{mode='enter',on_enter=tick,hold=hold})");
+ process();assert(ticks==1);
+ lockManager.locked=true;timerTick(std::make_shared<CEventLoopTimer>(),nullptr);
+ assert(holds==0&&!rules[0]->state.active);
+ lockManager.locked=false;
+ resetCapture();
+
+ run(L,"assert(edge.rule{mode='swipe',fingers=2,direction='down',on_enter=tick})");
+ auto pointer=std::make_shared<IPointer>();
+ wheel(nullptr,{60,WL_POINTER_AXIS_VERTICAL_SCROLL,WL_POINTER_AXIS_SOURCE_FINGER},pointer);
+ assert(scrollAxes&&scrollSwipe.captured);
+ pointer->deviceAlive=false;
+ pointer->m_events.destroy.emit();
+ assert(!scrollSwipe.captured&&scrollAxes==0);
+ for (bool keepWrapper : {true,false}) {
+  pointer=std::make_shared<IPointer>();
+  wheel(nullptr,{60,WL_POINTER_AXIS_VERTICAL_SCROLL,WL_POINTER_AXIS_SOURCE_FINGER},pointer);
+  assert(scrollAxes&&scrollSwipe.captured);
+  pointer->deviceAlive=false;
+  if (!keepWrapper)
+   pointer.reset();
+  fakeTime+=200;
+  timerTick(std::make_shared<CEventLoopTimer>(),nullptr);
+  assert(ticks==0&&!scrollSwipe.captured&&scrollAxes==0);
+ }
+ run(L,"assert(not edge.rule{mode='swipe',fingers=4294967298,on_enter=tick})");
+ resetCapture();
+}
 static void lifetimeCases(lua_State* L) {
  resetCapture();
  auto manager=std::static_pointer_cast<Config::Lua::CConfigManager>(Config::mgr());
  registerLuaFunctions();assert(registrations==3&&manager->functions.size()==3);
  preReload();assert(registrations==3); // Normal reload must not register twice.
  run(L,"assert(edge.rule{mode='enter',on_enter=tick,on_exit=tick,hold=hold})");
+ run(L,"edge.pause(true)");
+ preReload();discardDeadRules();
+ assert(rules.size()==1&&paused); // Syntax failure retains the current state.
  auto orphan=rules[0];
  // The fork invalidates this token before closing the state.
  manager->lifetime->state=nullptr;
@@ -217,7 +265,7 @@ static void lifetimeCases(lua_State* L) {
  auto* fresh=luaL_newstate();assert(fresh);luaL_openlibs(fresh);
  auto replacement=installManager(fresh);
  preReload();orphan.reset();
- assert(closedUnrefs==0&&rules.empty());
+ assert(closedUnrefs==0&&rules.empty()&&!paused);
  assert(registrations==6&&replacement->functions.size()==3);
  assert(replacement->functions.at("ultraedge.rule")==addRule);
  assert(replacement->functions.at("ultraedge.clear")==clear);
@@ -234,10 +282,12 @@ int main() {
  lua_setglobal(L,"edge");
  lua_pushcfunction(L,tick);lua_setglobal(L,"tick");
  lua_pushcfunction(L,hold);lua_setglobal(L,"hold");
+ lua_getglobal(L,"edge");lua_pushcfunction(L,pauseLua);lua_setfield(L,-2,"pause");lua_pop(L,1);
  coroutineCase(L);
  providerCases(L);
  captureCases(L);
  captureQueryCases(L);
  captureTailCases(L);
+ staleCallbackCases(L);
  lifetimeCases(L);
 }

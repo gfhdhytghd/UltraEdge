@@ -1,7 +1,7 @@
 # UltraEdge
 
 Independent Hyprland plugin for exposed edges and corners. `main` targets the latest
-official Hyprland release (v0.57.0); `hyprland-master` targets Hyprland's development `main`. Supports basic
+official Hyprland release (v0.57.2); `hyprland-master` targets Hyprland's development `main`. Supports basic
 hot edges/corners and a deliberate **arrive → stop → push again** gesture, plus edge-qualified
 two/three/four-finger directional touchpad gestures and configurable continuous
 outward pointer movement (`move_ms`, default 100ms), from mouse or touchpad. No
@@ -41,6 +41,22 @@ one native function at load. This repository has no
 remote requirement. Add/install/update only from a safe user-controlled session;
 plugin updates and loads change the running compositor. The authoring workflow
 here does not install, load/unload, update, inject input, push or publish.
+
+## hyprpm
+
+Use the release tag on Hyprland v0.57.2:
+
+```sh
+hyprpm add https://github.com/gfhdhytghd/UltraEdge v0.2.1-v0.57.2
+hyprpm enable UltraEdge
+```
+
+On Hyprland's development `main`, select the plugin's development branch:
+
+```sh
+hyprpm add https://github.com/gfhdhytghd/UltraEdge origin/hyprland-master
+hyprpm enable UltraEdge
+```
 
 ## Rules
 
@@ -120,12 +136,16 @@ Continuous movement, reversal and sideways movement require a new stop. Noise
 is per event and does not contribute to the push. No fabricated motion is used.
 
 Actions latch once. Dynamic hold callbacks are evaluated while active and must
-return global logical rectangles; nil causes one exit. An asynchronous provider
+return global logical rectangles; nil causes one exit. If an `enter` or `dwell`
+rule exits while the pointer is still in its trigger band, leave and reenter the
+band to rearm it. An asynchronous provider
 can use `hold_wait_ms`; after its first valid rectangle, later nil exits
 immediately, even during the grace window. Lua providers run synchronously in
 the compositor: keep them fast, read-only and nonblocking.
 Session lock, pause, config reload, output layout changes/removal and plugin exit
-clear state without executing actions. Pause is reset by config reload.
+clear state without executing actions. A reload that preserves the Lua state
+after a syntax error also preserves registered rules and the pause setting.
+Replacing the Lua state resets the pause setting.
 
 ## Edge touchpad gestures and key combinations
 

@@ -83,9 +83,22 @@ static void checkedUnref(lua_State* L,int table,int ref) {
 #define luaL_unref checkedUnref
 template<class T> struct CConfigValue {CConfigValue(const char*){} T operator*()const{return 0;}};
 struct FakeAQ {void* getLibinputHandle(){return this;}};
+struct CHyprSignalListener {
+ std::shared_ptr<std::function<void()>> callback;
+ void reset(){callback.reset();}
+};
+struct DestroySignal {
+ std::weak_ptr<std::function<void()>> callback;
+ CHyprSignalListener listen(std::function<void()> fn){
+  auto listener=std::make_shared<std::function<void()>>(std::move(fn));
+  callback=listener;return {listener};
+ }
+ void emit(){if(auto listener=callback.lock())(*listener)();}
+};
 struct IPointer {
+ struct {DestroySignal destroy;} m_events;
  bool m_isTouchpad=true,m_flipX=false,m_flipY=false;
- FakeAQ device;FakeAQ* aq(){return &device;}
+ FakeAQ device;bool deviceAlive=true;FakeAQ* aq(){return deviceAlive?&device:nullptr;}
  struct SMotionEvent {Vec delta{},unaccel{};SP<IPointer> device;};
  struct SAxisEvent {double delta=0;int axis=0,source=1;};
  struct SSwipeBeginEvent {int fingers=3;};
